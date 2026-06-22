@@ -99,11 +99,20 @@ function finalize(node: BuildNode): TreeNode {
     if (c.hasChanges || c.status !== 'unchanged') hasChanges = true;
   }
 
+  // Directories carry no status from the backend (it reports files only). Derive
+  // one so a wholly new/deleted folder highlights its name: a dir that exists on
+  // exactly one side is itself added/removed; otherwise it stays neutral.
+  let status = node.status;
+  if (node.isDir && node.path !== '') {
+    if (node.inB && !node.inA) status = 'added';
+    else if (node.inA && !node.inB) status = 'removed';
+  }
+
   return {
     name: node.name,
     path: node.path,
     isDir: node.isDir,
-    status: node.status,
+    status,
     inA: node.inA,
     inB: node.inB,
     pathA: node.pathA,
@@ -141,13 +150,13 @@ export function flattenTree(
   return out;
 }
 
-/** Directories with no changes start collapsed, so changes surface immediately. */
+/** All directories start collapsed; the user expands what they want to inspect. */
 export function defaultCollapsed(root: TreeNode): Set<string> {
   const collapsed = new Set<string>();
   const walk = (node: TreeNode) => {
     for (const child of node.children) {
       if (child.isDir) {
-        if (!child.hasChanges) collapsed.add(child.path);
+        collapsed.add(child.path);
         walk(child);
       }
     }

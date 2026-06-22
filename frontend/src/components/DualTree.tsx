@@ -14,12 +14,15 @@ interface DualTreeProps {
   onOpenDiff: (pathA: string, pathB: string, label: string) => void;
 }
 
-const statusStyles: Record<FileStatus, { row: string; text: string; mark: string }> = {
-  modified: { row: 'bg-amber-50 hover:bg-amber-100', text: 'text-amber-900', mark: '~' },
-  added: { row: 'bg-green-50 hover:bg-green-100', text: 'text-green-900', mark: '+' },
-  removed: { row: 'bg-red-50 hover:bg-red-100', text: 'text-red-900', mark: '−' },
-  renamed: { row: 'bg-blue-50 hover:bg-blue-100', text: 'text-blue-900', mark: '~' },
-  unchanged: { row: 'hover:bg-gray-50', text: 'text-gray-600', mark: '' },
+const statusStyles: Record<
+  FileStatus,
+  { row: string; text: string; mark: string; chip: string }
+> = {
+  modified: { row: 'bg-amber-50 hover:bg-amber-100', text: 'text-amber-900', mark: '~', chip: 'bg-amber-200 text-amber-900' },
+  added: { row: 'bg-green-50 hover:bg-green-100', text: 'text-green-900', mark: '+', chip: 'bg-green-200 text-green-900' },
+  removed: { row: 'bg-red-50 hover:bg-red-100', text: 'text-red-900', mark: '−', chip: 'bg-red-200 text-red-900' },
+  renamed: { row: 'bg-blue-50 hover:bg-blue-100', text: 'text-blue-900', mark: '~', chip: 'bg-blue-200 text-blue-900' },
+  unchanged: { row: 'hover:bg-gray-50', text: 'text-gray-600', mark: '', chip: '' },
 };
 
 export function DualTree({ comparison, onOpenDiff }: DualTreeProps) {
@@ -100,13 +103,19 @@ function Row({
   const icon = node.isDir ? '📁' : '';
 
   // Cell content for one side; empty placeholder if the node is absent there.
+  // Changed names get a colored chip so added/removed folders & files stand out.
   const cell = (present: boolean) => {
     if (!present) {
       return <span className="text-gray-300 select-none">·</span>;
     }
+    const changed = node.status !== 'unchanged';
     return (
-      <span className={`truncate ${style.text}`}>
-        {style.mark && <span className="opacity-60 mr-1">{style.mark}</span>}
+      <span
+        className={`truncate rounded px-1 ${
+          changed ? `${style.chip} font-medium` : style.text
+        }`}
+      >
+        {style.mark && <span className="opacity-70 mr-1">{style.mark}</span>}
         {node.name}
       </span>
     );

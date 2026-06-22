@@ -1,19 +1,26 @@
 //! Folder comparison with sha256 content hashing and rename detection.
-//! Ported from internal/folder/compare.go.
+//!
+//! Hashing a file requires reading every byte, so we never hash up front. The
+//! walk collects only metadata (size/mtime), and `compare` hashes the few files
+//! that actually need it: same-name files whose size matches (size mismatch is
+//! an instant "modified"), and rename candidates whose size matches across
+//! sides. Those hashes run in parallel (rayon). Added/removed files with a size
+//! found nowhere on the other side are never read at all.
 
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FileInfo {
-    pub path: String,
-    pub size: u64,
-    pub hash: String,
-    pub mtime: i64,
+/// File metadata collected during the walk (no hash — that's computed lazily).
+#[derive(Debug, Clone)]
+struct FileMeta {
+    rel: String,  // path relative to the folder root, forward-slashed
+    abs: PathBuf, // absolute path, for on-demand hashing
+    size: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -59,60 +66,102 @@ pub fn compare(path_a: &str, path_b: &str) -> io::Result<Comparison> {
         ..Default::default()
     };
 
-    let a_set: HashMap<&str, &FileInfo> = files_a.iter().map(|f| (f.path.as_str(), f)).collect();
-    let b_set: HashMap<&str, &FileInfo> = files_b.iter().map(|f| (f.path.as_str(), f)).collect();
+    let a_set: HashMap<&str, &FileMeta> = files_a.iter().map(|f| (f.rel.as_str(), f)).collect();
+    let b_set: HashMap<&str, &FileMeta> = files_b.iter().map(|f| (f.rel.as_str(), f)).collect();
 
-    // Common paths: unchanged vs modified by hash.
-    let mut common: Vec<&str> = Vec::new();
-    for &p in a_set.keys() {
-        if b_set.contains_key(p) {
-            common.push(p);
-        }
-    }
-    let common_set: std::collections::HashSet<&str> = common.iter().copied().collect();
+    // --- Same-name files: size mismatch = modified (no hash); size match = hash. ---
+    let common: Vec<&str> = a_set
+        .keys()
+        .copied()
+        .filter(|p| b_set.contains_key(p))
+        .collect();
+    let common_set: HashSet<&str> = common.iter().copied().collect();
+
+    // Files needing a content hash to decide unchanged-vs-modified.
+    let mut to_hash: Vec<&Path> = Vec::new();
     for &p in &common {
-        if a_set[p].hash == b_set[p].hash {
-            cmp.unchanged.push(p.to_string());
+        if a_set[p].size != b_set[p].size {
+            cmp.modified.push(p.to_string()); // different size ⇒ definitely changed
         } else {
-            cmp.modified.push(p.to_string());
+            to_hash.push(a_set[p].abs.as_path());
+            to_hash.push(b_set[p].abs.as_path());
         }
     }
 
-    // Rename detection: hash -> path among non-common files on each side.
-    let mut a_hashes: HashMap<&str, &str> = HashMap::new();
-    for (&p, f) in &a_set {
-        if !common_set.contains(p) {
-            a_hashes.insert(f.hash.as_str(), p);
+    // --- Rename candidates: non-common files, grouped by size so we only hash a
+    // file when the other side has a same-size orphan it could match. ---
+    let a_orphans: Vec<&FileMeta> =
+        files_a.iter().filter(|f| !common_set.contains(f.rel.as_str())).collect();
+    let b_orphans: Vec<&FileMeta> =
+        files_b.iter().filter(|f| !common_set.contains(f.rel.as_str())).collect();
+    let mut b_sizes: HashMap<u64, usize> = HashMap::new();
+    for f in &b_orphans {
+        *b_sizes.entry(f.size).or_insert(0) += 1;
+    }
+    let mut a_sizes: HashMap<u64, usize> = HashMap::new();
+    for f in &a_orphans {
+        *a_sizes.entry(f.size).or_insert(0) += 1;
+    }
+    // An orphan is worth hashing only if the opposite side has a same-size orphan.
+    for f in &a_orphans {
+        if b_sizes.contains_key(&f.size) {
+            to_hash.push(f.abs.as_path());
         }
     }
-    let mut b_hashes: HashMap<&str, &str> = HashMap::new();
-    for (&p, f) in &b_set {
-        if !common_set.contains(p) {
-            b_hashes.insert(f.hash.as_str(), p);
+    for f in &b_orphans {
+        if a_sizes.contains_key(&f.size) {
+            to_hash.push(f.abs.as_path());
         }
     }
 
-    let mut renamed_from: std::collections::HashSet<&str> = std::collections::HashSet::new();
-    let mut renamed_to: std::collections::HashSet<&str> = std::collections::HashSet::new();
-    for (h, &a_path) in &a_hashes {
-        if let Some(&b_path) = b_hashes.get(h) {
-            cmp.renamed.push(Rename { from: a_path.to_string(), to: b_path.to_string() });
-            renamed_from.insert(a_path);
-            renamed_to.insert(b_path);
+    // Hash all needed files in parallel, once each.
+    to_hash.sort_unstable();
+    to_hash.dedup();
+    let hashes = hash_many(&to_hash);
+    let hash_of = |m: &FileMeta| -> Option<&String> { hashes.get(m.abs.as_path()) };
+
+    // Resolve same-name, same-size files via their hashes.
+    for &p in &common {
+        if a_set[p].size != b_set[p].size {
+            continue; // already classified as modified
+        }
+        match (hash_of(a_set[p]), hash_of(b_set[p])) {
+            (Some(ha), Some(hb)) if ha == hb => cmp.unchanged.push(p.to_string()),
+            _ => cmp.modified.push(p.to_string()),
         }
     }
 
-    for &p in a_set.keys() {
-        if common_set.contains(p) || renamed_from.contains(p) {
-            continue;
+    // Rename detection among orphans, by matching content hash.
+    let mut b_by_hash: HashMap<&String, &str> = HashMap::new();
+    for f in &b_orphans {
+        if let Some(h) = hash_of(f) {
+            b_by_hash.insert(h, f.rel.as_str());
         }
-        cmp.removed.push(p.to_string());
     }
-    for &p in b_set.keys() {
-        if common_set.contains(p) || renamed_to.contains(p) {
-            continue;
+    let mut renamed_from: HashSet<&str> = HashSet::new();
+    let mut renamed_to: HashSet<&str> = HashSet::new();
+    for f in &a_orphans {
+        if let Some(h) = hash_of(f) {
+            if let Some(&b_path) = b_by_hash.get(h) {
+                if renamed_to.contains(b_path) {
+                    continue; // already paired
+                }
+                cmp.renamed.push(Rename { from: f.rel.clone(), to: b_path.to_string() });
+                renamed_from.insert(f.rel.as_str());
+                renamed_to.insert(b_path);
+            }
         }
-        cmp.added.push(p.to_string());
+    }
+
+    for f in &a_orphans {
+        if !renamed_from.contains(f.rel.as_str()) {
+            cmp.removed.push(f.rel.clone());
+        }
+    }
+    for f in &b_orphans {
+        if !renamed_to.contains(f.rel.as_str()) {
+            cmp.added.push(f.rel.clone());
+        }
     }
 
     cmp.unchanged.sort();
@@ -133,14 +182,21 @@ pub fn compare(path_a: &str, path_b: &str) -> io::Result<Comparison> {
     Ok(cmp)
 }
 
-fn walk(root: &str) -> io::Result<Vec<FileInfo>> {
+/// Hash a set of files in parallel, returning path -> hex digest. Files that
+/// fail to read are simply omitted (treated as "no hash" by callers).
+fn hash_many(paths: &[&Path]) -> HashMap<PathBuf, String> {
+    paths
+        .par_iter()
+        .filter_map(|p| hash_file(p).ok().map(|h| (p.to_path_buf(), h)))
+        .collect()
+}
+
+/// Walk a folder collecting per-file metadata only (no content read). Cheap.
+fn walk(root: &str) -> io::Result<Vec<FileMeta>> {
     let mut files = Vec::new();
     let root_path = Path::new(root);
     for entry in WalkDir::new(root).follow_links(false) {
         let entry = entry.map_err(|e| io::Error::other(e.to_string()))?;
-        if entry.file_type().is_dir() {
-            continue;
-        }
         if !entry.file_type().is_file() {
             continue;
         }
@@ -150,18 +206,10 @@ fn walk(root: &str) -> io::Result<Vec<FileInfo>> {
             .map(|p| p.to_string_lossy().replace('\\', "/"))
             .unwrap_or_else(|_| path.to_string_lossy().to_string());
         let meta = entry.metadata().map_err(|e| io::Error::other(e.to_string()))?;
-        let mtime = meta
-            .modified()
-            .ok()
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
-        let hash = hash_file(path)?;
-        files.push(FileInfo {
-            path: rel,
+        files.push(FileMeta {
+            rel,
+            abs: path.to_path_buf(),
             size: meta.len(),
-            hash,
-            mtime,
         });
     }
     Ok(files)

@@ -203,26 +203,34 @@ pub fn diff_sheet(
     let width_b = max_width(rows_b);
     let width = width_a.max(width_b);
 
-    sd.columns = Vec::with_capacity(width);
-    for i in 0..width {
-        let mut gc = GridColumn { name: col_letter(i), status: "equal".into() };
-        if i >= width_a && i < width_b {
-            gc.status = "added".into();
-            sd.added_cols += 1;
-        } else if i >= width_b && i < width_a {
-            gc.status = "removed".into();
-            sd.removed_cols += 1;
-        }
-        sd.columns.push(gc);
-    }
-
     let header_a = detect_header_row(rows_a, width);
     let header_b = detect_header_row(rows_b, width);
 
-    let row_pairs = align_rows(rows_a, rows_b, name, res);
+    // Align columns first (by the detected header row), so an inserted/removed
+    // column doesn't shift every row out of alignment. Each slot maps to a
+    // column index on A and/or B; the grid is rendered slot-by-slot.
+    let slots = align_columns(rows_a, rows_b, width_a, width_b, header_a, header_b);
+
+    sd.columns = Vec::with_capacity(slots.len());
+    for (k, slot) in slots.iter().enumerate() {
+        let status = match (slot.a >= 0, slot.b >= 0) {
+            (false, true) => {
+                sd.added_cols += 1;
+                "added"
+            }
+            (true, false) => {
+                sd.removed_cols += 1;
+                "removed"
+            }
+            _ => "equal",
+        };
+        sd.columns.push(GridColumn { name: col_letter(k), status: status.into() });
+    }
+
+    let row_pairs = align_rows(rows_a, rows_b, &slots, name, res);
 
     for rp in &row_pairs {
-        let mut gr = build_grid_row(*rp, rows_a, rows_b, width);
+        let mut gr = build_grid_row(*rp, rows_a, rows_b, &slots);
         if (gr.row_a != 0 && gr.row_a == header_a) || (gr.row_b != 0 && gr.row_b == header_b) {
             gr.header = true;
         }
@@ -277,6 +285,70 @@ fn col_letter(mut i: usize) -> String {
     String::from_utf8(b).unwrap()
 }
 
+/// One column slot in the aligned grid. `a`/`b` are 0-based source column
+/// indices, or -1 when the column exists only on the other side.
+#[derive(Clone, Copy)]
+struct ColSlot {
+    a: isize,
+    b: isize,
+}
+
+/// align_columns matches A's columns to B's by LCS over the header-row cells, so
+/// an inserted or removed column is detected instead of shifting every row. When
+/// no usable header is found (or headers are identical in width), it falls back
+/// to positional 1:1 slots.
+fn align_columns(
+    rows_a: &[Vec<String>],
+    rows_b: &[Vec<String>],
+    width_a: usize,
+    width_b: usize,
+    header_a: usize,
+    header_b: usize,
+) -> Vec<ColSlot> {
+    // Header cells (the row indices are 1-based; 0 means "none detected").
+    let head_a: &[String] = if header_a > 0 { &rows_a[header_a - 1] } else { &[] };
+    let head_b: &[String] = if header_b > 0 { &rows_b[header_b - 1] } else { &[] };
+
+    // Need real, non-trivial headers on both sides to align by name.
+    let usable = header_a > 0
+        && header_b > 0
+        && head_a.iter().filter(|c| !c.trim().is_empty()).count() >= 2
+        && head_b.iter().filter(|c| !c.trim().is_empty()).count() >= 2;
+
+    if !usable {
+        // Positional fallback: pair by index, surplus columns are one-sided.
+        let n = width_a.max(width_b);
+        return (0..n)
+            .map(|i| ColSlot {
+                a: if i < width_a { i as isize } else { -1 },
+                b: if i < width_b { i as isize } else { -1 },
+            })
+            .collect();
+    }
+
+    // LCS over header cell text. Normalize so trivial whitespace doesn't break a
+    // match, but keep it strict enough that a renamed column reads as add+remove.
+    let norm = |s: &str| s.trim().to_lowercase();
+    let ka: Vec<String> = (0..width_a)
+        .map(|i| norm(head_a.get(i).map(|s| s.as_str()).unwrap_or("")))
+        .collect();
+    let kb: Vec<String> = (0..width_b)
+        .map(|i| norm(head_b.get(i).map(|s| s.as_str()).unwrap_or("")))
+        .collect();
+    let ops = diff(&ka, &kb);
+
+    let mut slots: Vec<ColSlot> = Vec::new();
+    for op in &ops {
+        match op.typ {
+            OpType::Equal => slots.push(ColSlot { a: op.a as isize, b: op.b as isize }),
+            OpType::Delete => slots.push(ColSlot { a: op.a as isize, b: -1 }),
+            OpType::Insert => slots.push(ColSlot { a: -1, b: op.b as isize }),
+            OpType::Replace => {}
+        }
+    }
+    slots
+}
+
 #[derive(Clone, Copy)]
 struct RowPair {
     a: isize,
@@ -286,6 +358,7 @@ struct RowPair {
 fn align_rows(
     rows_a: &[Vec<String>],
     rows_b: &[Vec<String>],
+    slots: &[ColSlot],
     sheet: &str,
     res: &mut ExcelResult,
 ) -> Vec<RowPair> {
@@ -297,7 +370,7 @@ fn align_rows(
         ));
         return align_rows_by_position(rows_a, rows_b);
     }
-    align_rows_by_lcs(rows_a, rows_b)
+    align_rows_by_lcs(rows_a, rows_b, slots)
 }
 
 fn align_rows_by_position(rows_a: &[Vec<String>], rows_b: &[Vec<String>]) -> Vec<RowPair> {
@@ -312,9 +385,13 @@ fn align_rows_by_position(rows_a: &[Vec<String>], rows_b: &[Vec<String>]) -> Vec
     pairs
 }
 
-fn align_rows_by_lcs(rows_a: &[Vec<String>], rows_b: &[Vec<String>]) -> Vec<RowPair> {
-    let sig_a = signatures(rows_a);
-    let sig_b = signatures(rows_b);
+fn align_rows_by_lcs(rows_a: &[Vec<String>], rows_b: &[Vec<String>], slots: &[ColSlot]) -> Vec<RowPair> {
+    // Signatures use only the columns common to both sides (aligned slots), so a
+    // wholly inserted/removed column doesn't perturb every row's signature.
+    let cols_a: Vec<usize> = slots.iter().filter(|s| s.a >= 0 && s.b >= 0).map(|s| s.a as usize).collect();
+    let cols_b: Vec<usize> = slots.iter().filter(|s| s.a >= 0 && s.b >= 0).map(|s| s.b as usize).collect();
+    let sig_a = signatures(rows_a, &cols_a);
+    let sig_b = signatures(rows_b, &cols_b);
     let ops = diff(&sig_a, &sig_b);
 
     let mut pairs: Vec<RowPair> = Vec::new();
@@ -324,7 +401,7 @@ fn align_rows_by_lcs(rows_a: &[Vec<String>], rows_b: &[Vec<String>]) -> Vec<RowP
     for op in &ops {
         match op.typ {
             OpType::Equal => {
-                pairs.extend(repair_gap(&pending_del, &pending_ins, rows_a, rows_b));
+                pairs.extend(repair_gap(&pending_del, &pending_ins, rows_a, rows_b, slots));
                 pending_del.clear();
                 pending_ins.clear();
                 pairs.push(RowPair { a: op.a as isize, b: op.b as isize });
@@ -335,7 +412,7 @@ fn align_rows_by_lcs(rows_a: &[Vec<String>], rows_b: &[Vec<String>]) -> Vec<RowP
             OpType::Replace => {}
         }
     }
-    pairs.extend(repair_gap(&pending_del, &pending_ins, rows_a, rows_b));
+    pairs.extend(repair_gap(&pending_del, &pending_ins, rows_a, rows_b, slots));
     pairs
 }
 
@@ -346,6 +423,7 @@ fn repair_gap(
     ins: &[usize],
     rows_a: &[Vec<String>],
     rows_b: &[Vec<String>],
+    slots: &[ColSlot],
 ) -> Vec<RowPair> {
     let mut used_ins = vec![false; ins.len()];
     let mut match_of_del: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
@@ -356,7 +434,7 @@ fn repair_gap(
             if used_ins[j] {
                 continue;
             }
-            let sim = row_similarity(&rows_a[ai], &rows_b[bi]);
+            let sim = row_similarity(&rows_a[ai], &rows_b[bi], slots);
             if sim > best_sim {
                 best_sim = sim;
                 best_j = j as isize;
@@ -384,27 +462,37 @@ fn repair_gap(
     pairs
 }
 
-fn signatures(rows: &[Vec<String>]) -> Vec<String> {
-    rows.iter().map(|r| r.join("\u{0}")).collect()
+/// signatures joins each row's cells at the given column indices (the columns
+/// common to both sides), so rows are compared on aligned columns only.
+fn signatures(rows: &[Vec<String>], cols: &[usize]) -> Vec<String> {
+    rows.iter()
+        .map(|r| {
+            cols.iter()
+                .map(|&c| r.get(c).map(|s| s.as_str()).unwrap_or(""))
+                .collect::<Vec<_>>()
+                .join("\u{0}")
+        })
+        .collect()
 }
 
-fn row_similarity(ra: &[String], rb: &[String]) -> f64 {
-    let n = ra.len().max(rb.len());
-    if n == 0 {
+/// row_similarity compares two rows over the aligned common columns only.
+fn row_similarity(ra: &[String], rb: &[String], slots: &[ColSlot]) -> f64 {
+    let common: Vec<&ColSlot> = slots.iter().filter(|s| s.a >= 0 && s.b >= 0).collect();
+    if common.is_empty() {
         return 1.0;
     }
     let mut same = 0;
-    for i in 0..n {
-        let va = ra.get(i).map(|s| s.as_str()).unwrap_or("");
-        let vb = rb.get(i).map(|s| s.as_str()).unwrap_or("");
+    for s in &common {
+        let va = ra.get(s.a as usize).map(|x| x.as_str()).unwrap_or("");
+        let vb = rb.get(s.b as usize).map(|x| x.as_str()).unwrap_or("");
         if va == vb {
             same += 1;
         }
     }
-    same as f64 / n as f64
+    same as f64 / common.len() as f64
 }
 
-fn build_grid_row(rp: RowPair, rows_a: &[Vec<String>], rows_b: &[Vec<String>], width: usize) -> GridRow {
+fn build_grid_row(rp: RowPair, rows_a: &[Vec<String>], rows_b: &[Vec<String>], slots: &[ColSlot]) -> GridRow {
     let ra: &[String] = if rp.a >= 0 { &rows_a[rp.a as usize] } else { &[] };
     let rb: &[String] = if rp.b >= 0 { &rows_b[rp.b as usize] } else { &[] };
     let mut gr = GridRow {
@@ -412,30 +500,51 @@ fn build_grid_row(rp: RowPair, rows_a: &[Vec<String>], rows_b: &[Vec<String>], w
         row_a: if rp.a >= 0 { rp.a as usize + 1 } else { 0 },
         row_b: if rp.b >= 0 { rp.b as usize + 1 } else { 0 },
         header: false,
-        cells: Vec::with_capacity(width),
+        cells: Vec::with_capacity(slots.len()),
     };
 
-    gr.status = if rp.a < 0 {
-        "added".into()
+    let row_status = if rp.a < 0 {
+        "added"
     } else if rp.b < 0 {
-        "removed".into()
+        "removed"
     } else {
-        "equal".into() // refined while filling cells
+        "equal" // refined while filling cells
+    };
+    gr.status = row_status.into();
+
+    // Fetch a cell by aligned slot (handles columns absent on one side).
+    let get = |row: &[String], idx: isize| -> String {
+        if idx < 0 {
+            String::new()
+        } else {
+            row.get(idx as usize).cloned().unwrap_or_default()
+        }
     };
 
     let mut modified = false;
-    for i in 0..width {
-        let va = ra.get(i).map(|s| s.as_str()).unwrap_or("");
-        let vb = rb.get(i).map(|s| s.as_str()).unwrap_or("");
-        let cc = match gr.status.as_str() {
-            "added" => CellChange { status: "added".into(), old: String::new(), new_val: vb.into() },
-            "removed" => CellChange { status: "removed".into(), old: va.into(), new_val: String::new() },
-            _ => {
-                if va != vb {
-                    modified = true;
-                    CellChange { status: "modified".into(), old: va.into(), new_val: vb.into() }
-                } else {
-                    CellChange { status: "equal".into(), old: String::new(), new_val: vb.into() }
+    for slot in slots {
+        let va = get(ra, slot.a);
+        let vb = get(rb, slot.b);
+        // A column present on only one side is an added/removed column: its cell
+        // takes that status regardless of the row (whole-column highlight), but
+        // it does NOT mark the row itself modified.
+        let cc = if slot.b < 0 {
+            // removed column
+            CellChange { status: "removed".into(), old: va, new_val: String::new() }
+        } else if slot.a < 0 {
+            // added column
+            CellChange { status: "added".into(), old: String::new(), new_val: vb }
+        } else {
+            match row_status {
+                "added" => CellChange { status: "added".into(), old: String::new(), new_val: vb },
+                "removed" => CellChange { status: "removed".into(), old: va, new_val: String::new() },
+                _ => {
+                    if va != vb {
+                        modified = true;
+                        CellChange { status: "modified".into(), old: va, new_val: vb }
+                    } else {
+                        CellChange { status: "equal".into(), old: String::new(), new_val: vb }
+                    }
                 }
             }
         };
