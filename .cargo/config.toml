@@ -1,0 +1,22 @@
+# Build configuration. Linker/ar are referenced by command NAME (not absolute
+# path) so this file is portable across machines — put the relevant toolchain on
+# your PATH before building. No hardcoded home directories.
+
+# Linux host target: WSL has no system C linker (no gcc/cc). We use Zig's bundled
+# clang as the linker so `cargo test -p shtuka-core` builds on the host. Install
+# zig and put its `zcc` wrapper on PATH (or symlink it). Only affects host tests;
+# the real GUI build target is Windows below.
+[target.x86_64-unknown-linux-gnu]
+linker = "zcc"
+rustflags = ["-C", "link-arg=-lunwind"]
+
+# Windows cross-compile uses the llvm-mingw toolchain (clang/lld/compiler-rt +
+# full Windows CRT and headers). It's the "gnullvm" flavor (compiler-rt, not
+# libgcc), so we target x86_64-pc-windows-gnullvm and link with its clang driver.
+# Put llvm-mingw's bin/ on PATH before building (also needed for windres).
+[target.x86_64-pc-windows-gnullvm]
+linker = "x86_64-w64-mingw32-clang"
+ar = "x86_64-w64-mingw32-ar"
+# Statically link the llvm-mingw runtime (libunwind, libc++, compiler-rt) so the
+# exe has no libunwind.dll dependency and runs standalone on Windows.
+rustflags = ["-C", "target-feature=+crt-static"]

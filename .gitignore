@@ -1,0 +1,45 @@
+# Rust / Cargo
+/target/
+**/*.rs.bk
+
+# Tauri generated
+src-tauri/gen/
+
+# Frontend build outputs
+frontend/dist/
+build/bin/
+
+# Node
+node_modules/
+
+# Compiled binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+# ...but ship the redistributable runtime DLLs with the Windows build.
+!dist-windows/*.dll
+!dist-windows/*.exe
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local config
+*.local
+
+# Claude Code local config / agent workspace
+.claude/
+
+# Sample / scratch data (do not commit real workbooks or documents)
+*.xlsx
+*.xls
+*.xlsm
+*.pdf
