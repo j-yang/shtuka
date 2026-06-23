@@ -4,6 +4,7 @@ import { DualTree } from './components/DualTree';
 import { DiffView } from './components/DiffView';
 import { CompareFiles } from './components/CompareFiles';
 import { TrackView } from './components/TrackView';
+import { UpdateChecker } from './components/UpdateChecker';
 import { Comparison } from './types';
 import { CompareFolders } from '../wailsjs/go/main/App';
 
@@ -80,6 +81,7 @@ export default function App() {
             {tab('track', 'Track')}
           </div>
         </div>
+        <div className="flex items-center gap-3">
         {mode === 'folders' && comparison && (
           <div className="flex items-center gap-3 text-xs">
             <span className="text-gray-500">
@@ -108,6 +110,8 @@ export default function App() {
             )}
           </div>
         )}
+          <UpdateChecker />
+        </div>
       </header>
 
       {mode === 'folders' && (

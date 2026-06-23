@@ -1,0 +1,94 @@
+name: release
+
+# Build and publish shtuka for Windows, macOS and Linux on every version tag.
+# Push a tag like `v0.2.0` to trigger; the job creates a GitHub Release with the
+# installers + the updater `latest.json` (signed with the updater private key).
+on:
+  push:
+    tags:
+      - 'v*'
+
+# tauri-action needs to create the release and upload assets.
+permissions:
+  contents: write
+
+jobs:
+  release:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            pdfium_asset: pdfium-win-x64.tgz
+            pdfium_lib: bin/pdfium.dll
+            pdfium_dest: pdfium.dll
+          - platform: ubuntu-22.04
+            pdfium_asset: pdfium-linux-x64.tgz
+            pdfium_lib: lib/libpdfium.so
+            pdfium_dest: libpdfium.so
+          - platform: macos-latest
+            pdfium_asset: pdfium-mac-arm64.tgz
+            pdfium_lib: lib/libpdfium.dylib
+            pdfium_dest: libpdfium.dylib
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # --- Linux system deps for Tauri (WebKitGTK etc.) ---
+      - name: Install Linux deps
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
+            librsvg2-dev patchelf libgtk-3-dev
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Install frontend deps
+        working-directory: frontend
+        run: npm ci
+
+      # --- Fetch the matching pdfium runtime into src-tauri/resources ---
+      # Build chromium/7763 matches the pdfium-render 0.9.2 ABI we pin.
+      - name: Fetch pdfium (Unix)
+        if: matrix.platform != 'windows-latest'
+        run: |
+          mkdir -p src-tauri/resources
+          curl -sL -o pdfium.tgz "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium%2F7763/${{ matrix.pdfium_asset }}"
+          tar xzf pdfium.tgz "${{ matrix.pdfium_lib }}"
+          mv "${{ matrix.pdfium_lib }}" "src-tauri/resources/${{ matrix.pdfium_dest }}"
+
+      - name: Fetch pdfium (Windows)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path src-tauri/resources | Out-Null
+          curl.exe -sL -o pdfium.tgz "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium%2F7763/${{ matrix.pdfium_asset }}"
+          tar xzf pdfium.tgz "${{ matrix.pdfium_lib }}"
+          Move-Item "${{ matrix.pdfium_lib }}" "src-tauri/resources/${{ matrix.pdfium_dest }}"
+
+      - name: Build & release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: src-tauri
+          tagName: ${{ github.ref_name }}
+          releaseName: 'shtuka ${{ github.ref_name }}'
+          releaseBody: 'See the assets below. The app can self-update via "Check for update".'
+          releaseDraft: false
+          prerelease: false
+          # macOS runner is Apple Silicon by default; build that target.
+          args: ${{ matrix.platform == 'macos-latest' && '--target aarch64-apple-darwin' || '' }}

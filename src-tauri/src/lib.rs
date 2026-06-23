@@ -275,10 +275,19 @@ fn base64_encode(data: &[u8]) -> String {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .setup(|app| {
             // Match the Wails window styling.
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.set_title("shtuka");
+            }
+            // Point pdfium at the bundled resource dir. Installers put resources
+            // in OS-specific locations (e.g. macOS .app/Contents/Resources), so
+            // resolve it at runtime; pdf.rs reads PDFIUM_LIB_PATH first. Falls
+            // back harmlessly to the exe dir when unset (portable Windows zip).
+            if let Ok(dir) = app.path().resource_dir() {
+                std::env::set_var("PDFIUM_LIB_PATH", dir);
             }
             Ok(())
         })
