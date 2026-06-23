@@ -1,14 +1,12 @@
 # Build configuration. Linker/ar are referenced by command NAME (not absolute
 # path) so this file is portable across machines — put the relevant toolchain on
 # your PATH before building. No hardcoded home directories.
-
-# Linux host target: WSL has no system C linker (no gcc/cc). We use Zig's bundled
-# clang as the linker so `cargo test -p shtuka-core` builds on the host. Install
-# zig and put its `zcc` wrapper on PATH (or symlink it). Only affects host tests;
-# the real GUI build target is Windows below.
-[target.x86_64-unknown-linux-gnu]
-linker = "zcc"
-rustflags = ["-C", "link-arg=-lunwind"]
+#
+# NOTE: no Linux-host target block here on purpose. CI (GitHub Actions, native
+# Ubuntu) and normal Linux dev use the system `cc`/`gcc` linker. On a WSL box
+# without a system C linker, point host builds at zig's wrapper via the env var
+# CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=zcc (do not commit it here — it
+# would break CI, which has no `zcc`).
 
 # Windows cross-compile uses the llvm-mingw toolchain (clang/lld/compiler-rt +
 # full Windows CRT and headers). It's the "gnullvm" flavor (compiler-rt, not
