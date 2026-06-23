@@ -12,7 +12,7 @@ Add these to the repo's **Settings → Secrets and variables → Actions**:
 | Secret | Value |
 |---|---|
 | `TAURI_SIGNING_PRIVATE_KEY` | contents of the updater private key file (see below) |
-| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | empty string (the key was generated with no password) |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | the password set when the key was generated (GitHub rejects empty secrets, so the key has a real password) |
 
 The updater **public** key is committed in `src-tauri/tauri.conf.json`
 (`plugins.updater.pubkey`). The matching **private** key was generated with
