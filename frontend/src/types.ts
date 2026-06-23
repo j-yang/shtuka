@@ -129,7 +129,79 @@ export interface DiffResult {
   text?: TextResult;
   excel?: ExcelResult;
   docx?: DocxResult;
+  rtf?: RtfResult;
+  xml?: XmlResult;
   error?: string;
+}
+
+// --- XML (define.xml, XSLT-rendered side-by-side) --------------------------
+
+export interface XmlChange {
+  kind: 'added' | 'removed' | 'modified';
+  elemType: string;
+  oid: string;
+  label: string;
+  idPrefix?: string;
+  domain?: string;
+  varName?: string;
+  changedAttrs?: string[];
+  changedKeys?: string[];
+}
+
+export interface XmlResult {
+  fileType: 'xml';
+  pathA: string;
+  pathB: string;
+  xmlA?: string;
+  xmlB?: string;
+  xslA?: string;
+  xslB?: string;
+  notes?: string[];
+  changes?: XmlChange[];
+}
+
+// --- RTF (styled-table side-by-side) ---------------------------------------
+
+export interface CellStyle {
+  bg?: string;
+  color?: string;
+  align?: string;
+  bold?: boolean;
+  mono?: boolean;
+  fs?: number;
+  widthPct?: number;
+  bt?: boolean;
+  bb?: boolean;
+  bl?: boolean;
+  br?: boolean;
+}
+
+export interface RtfCell {
+  text: string;
+  style: CellStyle;
+}
+
+export interface RtfDiffCell {
+  status: 'equal' | 'modified' | 'added' | 'removed';
+  a?: RtfCell;
+  b?: RtfCell;
+  aSegs?: InlineSeg[];
+  bSegs?: InlineSeg[];
+}
+
+export interface RtfDiffRow {
+  status: 'equal' | 'modified' | 'added' | 'removed';
+  cells: RtfDiffCell[];
+}
+
+export interface RtfResult {
+  fileType: 'rtf';
+  pathA: string;
+  pathB: string;
+  rows: RtfDiffRow[];
+  added: number;
+  modified: number;
+  removed: number;
 }
 
 // --- Track / changelog -----------------------------------------------------

@@ -19,6 +19,10 @@ export function SelectFile(arg1) {
   return invoke('select_file', { title: arg1 });
 }
 
+export function SaveTextFile(defaultName, contents) {
+  return invoke('save_text_file', { defaultName, contents });
+}
+
 // --- Track / changelog ---------------------------------------------------
 
 export function ListTracks(root) {

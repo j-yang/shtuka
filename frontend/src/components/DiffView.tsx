@@ -4,6 +4,8 @@ import { DiffResult, TextResult, DocxResult } from '../types';
 import { DiffFiles } from '../../wailsjs/go/main/App';
 import { ExcelDiffPane } from './ExcelDiffPane';
 import { PdfPagesView } from './PdfPagesView';
+import { RtfDiffView } from './RtfDiffView';
+import { XmlDiffView } from './XmlDiffView';
 
 const isPdf = (p?: string) => !!p && /\.pdf$/i.test(p);
 
@@ -142,6 +144,8 @@ export function DiffView({ pathA, pathB, label, onClose, fetcher, fetchKey }: Di
             )}
             {!loading && !error && result && (
               <>
+                {result.rtf && <RtfDiffView result={result.rtf} />}
+                {result.xml && <XmlDiffView result={result.xml} />}
                 {result.text && <TextDiffPane result={result.text} leftRef={leftRef} rightRef={rightRef} onScroll={handleScroll} />}
                 {result.excel && <ExcelDiffPane result={result.excel} />}
                 {result.docx && <DocxDiffPane result={result.docx} />}

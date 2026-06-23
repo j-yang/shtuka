@@ -63,6 +63,33 @@ async fn select_file(app: tauri::AppHandle, title: String) -> Result<String, Str
     Ok(chosen.map(|p| p.to_string()).unwrap_or_default())
 }
 
+/// Open a native save dialog and write `contents` to the chosen path. Returns
+/// the saved path, or "" if cancelled.
+#[tauri::command]
+async fn save_text_file(
+    app: tauri::AppHandle,
+    default_name: String,
+    contents: String,
+) -> Result<String, String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.dialog()
+        .file()
+        .set_title("Export report")
+        .set_file_name(&default_name)
+        .save_file(move |path| {
+            let _ = tx.send(path);
+        });
+    let chosen = rx.recv().map_err(|e| e.to_string())?;
+    match chosen {
+        Some(p) => {
+            let path = p.to_string();
+            std::fs::write(&path, contents.as_bytes()).map_err(|e| format!("write {}: {}", path, e))?;
+            Ok(path)
+        }
+        None => Ok(String::new()),
+    }
+}
+
 /// List all tracks stored under a project root's .shtuka-history.
 #[tauri::command]
 async fn list_tracks(root: String) -> Result<Vec<track::TrackSummary>, String> {
@@ -258,6 +285,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             select_folder,
             select_file,
+            save_text_file,
             compare_folders,
             diff_files,
             list_tracks,

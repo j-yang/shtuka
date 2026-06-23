@@ -15,6 +15,7 @@ export function CompareFolders(arg1: string, arg2: string): Promise<Comparison>;
 export function DiffFiles(arg1: string, arg2: string): Promise<DiffResult>;
 export function SelectFolder(arg1: string): Promise<string>;
 export function SelectFile(arg1: string): Promise<string>;
+export function SaveTextFile(defaultName: string, contents: string): Promise<string>;
 
 export function ListTracks(root: string): Promise<TrackSummary[]>;
 export function GetTrack(root: string, id: string): Promise<Track>;

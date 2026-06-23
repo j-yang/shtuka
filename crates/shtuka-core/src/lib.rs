@@ -9,6 +9,7 @@ pub mod pdf;
 pub mod rtf;
 pub mod text;
 pub mod track;
+pub mod xml;
 
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -46,6 +47,10 @@ pub struct DiffResult {
     pub excel: Option<ExcelResult>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub docx: Option<DocxResult>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rtf: Option<rtf::RtfResult>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub xml: Option<xml::XmlResult>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub error: String,
 }
@@ -76,14 +81,20 @@ pub fn dispatch(path_a: &str, path_b: &str) -> Result<DiffResult, String> {
             return Err("legacy .doc format not supported (please convert to .docx)".into());
         }
         "rtf" => {
-            let r = rtf::rtf_diff(path_a, path_b).map_err(|e| e.to_string())?;
-            res.file_type = "text".into();
-            res.text = Some(r);
+            // SAS RTF outputs are styled tables; render side-by-side as HTML.
+            let r = rtf::rtf_diff(path_a, path_b)?;
+            res.file_type = "rtf".into();
+            res.rtf = Some(r);
         }
         "pdf" => {
             let r = pdf::pdf_diff(path_a, path_b)?;
             res.file_type = "text".into();
             res.text = Some(r);
+        }
+        "xml" => {
+            let r = xml::xml_diff(path_a, path_b)?;
+            res.file_type = "xml".into();
+            res.xml = Some(r);
         }
         _ => {
             let r = text::text_diff(path_a, path_b).map_err(|e| e.to_string())?;

@@ -119,7 +119,7 @@ pub(crate) fn pair_replacements(ops: Vec<Op>) -> Vec<Op> {
 /// stay un-highlighted and only the tokens that actually differ are marked.
 /// Returns per-side segment lists, or None when the lines share too little to be
 /// considered a modification (then they remain a separate delete + insert).
-fn inline_segments(a: &str, b: &str) -> Option<(Vec<Seg>, Vec<Seg>)> {
+pub(crate) fn inline_segments(a: &str, b: &str) -> Option<(Vec<Seg>, Vec<Seg>)> {
     let ta = tokenize(a);
     let tb = tokenize(b);
     let ops = diff(&ta, &tb);
