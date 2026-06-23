@@ -45,6 +45,10 @@ export function DiffSnapshots(root, id, seqA, seqB) {
   return invoke('diff_snapshots', { root, id, seqA, seqB });
 }
 
+export function VariableHistory(root, id, sheet, varName) {
+  return invoke('variable_history', { root, id, sheet, varName });
+}
+
 // --- PDF page rendering --------------------------------------------------
 
 export function RenderPdfPage(path, pageIndex, width) {

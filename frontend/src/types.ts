@@ -240,6 +240,27 @@ export interface SnapshotResult {
   message: string;
 }
 
+export interface VarHistRow {
+  seq: number;
+  takenAt: number;
+  present: boolean;
+  cells: string[];
+  changed: boolean[];
+}
+
+export interface VarHistory {
+  sheet: string;
+  varName: string;
+  headers: string[];
+  rows: VarHistRow[];
+}
+
+// Track context passed into a snapshot diff so its Excel rows can open history.
+export interface TrackContext {
+  root: string;
+  id: string;
+}
+
 // --- PDF diff (B-primary, single-document highlight) ------------------------
 
 // Highlight rect normalized to 0..1 (top-left origin) over a rendered page.

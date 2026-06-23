@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
-import { DiffResult, TextResult, DocxResult } from '../types';
+import { DiffResult, TextResult, DocxResult, TrackContext } from '../types';
 import { DiffFiles } from '../../wailsjs/go/main/App';
 import { ExcelDiffPane } from './ExcelDiffPane';
 import { PdfPagesView } from './PdfPagesView';
@@ -25,9 +25,12 @@ interface DiffViewProps {
   // instead of the default path-based DiffFiles call. `fetchKey` re-runs it.
   fetcher?: () => Promise<DiffResult>;
   fetchKey?: string;
+  // When this diff is a Track snapshot pair, the Excel pane lets you open a
+  // variable's history across all snapshots.
+  trackContext?: TrackContext;
 }
 
-export function DiffView({ pathA, pathB, label, onClose, fetcher, fetchKey }: DiffViewProps) {
+export function DiffView({ pathA, pathB, label, onClose, fetcher, fetchKey, trackContext }: DiffViewProps) {
   const [result, setResult] = useState<DiffResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -147,7 +150,7 @@ export function DiffView({ pathA, pathB, label, onClose, fetcher, fetchKey }: Di
                 {result.rtf && <RtfDiffView result={result.rtf} />}
                 {result.xml && <XmlDiffView result={result.xml} />}
                 {result.text && <TextDiffPane result={result.text} leftRef={leftRef} rightRef={rightRef} onScroll={handleScroll} />}
-                {result.excel && <ExcelDiffPane result={result.excel} />}
+                {result.excel && <ExcelDiffPane result={result.excel} trackContext={trackContext} />}
                 {result.docx && <DocxDiffPane result={result.docx} />}
               </>
             )}

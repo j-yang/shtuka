@@ -297,6 +297,143 @@ pub fn diff_snapshots(root: &str, id: &str, seq_a: u32, seq_b: u32) -> Result<Di
     dispatch(&pa.to_string_lossy(), &pb.to_string_lossy())
 }
 
+// ---------------------------------------------------------------------------
+// Variable history: how one variable (a row in an Excel mapping spec) evolved
+// across every snapshot of a track. Keyed by (sheet, variable name) since row
+// numbers shift between versions.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VarHistRow {
+    pub seq: u32,
+    #[serde(rename = "takenAt")]
+    pub taken_at: i64,
+    /// Whether this variable exists in this snapshot's sheet.
+    pub present: bool,
+    /// The variable's row cells (aligned to `headers`), empty when absent.
+    pub cells: Vec<String>,
+    /// Per-cell flag: changed vs the previous *present* version.
+    #[serde(rename = "changed")]
+    pub changed: Vec<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VarHistory {
+    pub sheet: String,
+    #[serde(rename = "varName")]
+    pub var_name: String,
+    /// Column headers (union from the latest version that has them).
+    pub headers: Vec<String>,
+    pub rows: Vec<VarHistRow>,
+}
+
+/// variable_history walks every snapshot, locating the row whose first column
+/// equals `var_name` on the given `sheet`, and returns its values per version
+/// with per-cell change flags so the UI can render a version×column matrix.
+pub fn variable_history(
+    root: &str,
+    id: &str,
+    sheet: &str,
+    var_name: &str,
+) -> Result<VarHistory, String> {
+    let track = get_track(root, id).map_err(|e| e.to_string())?;
+    let mut rows: Vec<VarHistRow> = Vec::new();
+    let mut headers: Vec<String> = Vec::new();
+    let mut prev_cells: Option<Vec<String>> = None;
+
+    for snap in &track.snapshots {
+        let path = track_dir(root, id).join(&snap.file);
+        let (hdr, cells) = extract_var_row(&path.to_string_lossy(), sheet, var_name);
+        if !hdr.is_empty() {
+            headers = hdr; // keep the most recent non-empty header set
+        }
+        let present = cells.is_some();
+        let cells = cells.unwrap_or_default();
+        // Change flags vs the previous present version (cell-by-cell).
+        let changed: Vec<bool> = if let Some(prev) = &prev_cells {
+            let n = cells.len().max(prev.len());
+            (0..n)
+                .map(|i| cells.get(i).map(|s| s.as_str()) != prev.get(i).map(|s| s.as_str()))
+                .collect()
+        } else {
+            vec![false; cells.len()]
+        };
+        if present {
+            prev_cells = Some(cells.clone());
+        }
+        rows.push(VarHistRow {
+            seq: snap.seq,
+            taken_at: snap.taken_at,
+            present,
+            cells,
+            changed,
+        });
+    }
+
+    Ok(VarHistory {
+        sheet: sheet.to_string(),
+        var_name: var_name.to_string(),
+        headers,
+        rows,
+    })
+}
+
+/// extract_var_row opens one xlsx, finds the table header row on `sheet`, and
+/// returns (headers, Some(row_cells)) for the row whose first cell == var_name,
+/// or (headers, None) if that variable isn't on the sheet. Returns empty headers
+/// if the sheet/file can't be read.
+fn extract_var_row(path: &str, sheet: &str, var_name: &str) -> (Vec<String>, Option<Vec<String>>) {
+    use calamine::{open_workbook_auto, Data, Reader};
+
+    let to_s = |d: &Data| -> String {
+        match d {
+            Data::Empty => String::new(),
+            Data::String(s) => s.clone(),
+            Data::Float(f) => {
+                if f.fract() == 0.0 && f.abs() < 1e15 {
+                    format!("{}", *f as i64)
+                } else {
+                    format!("{f}")
+                }
+            }
+            Data::Int(i) => i.to_string(),
+            Data::Bool(b) => if *b { "TRUE".into() } else { "FALSE".into() },
+            Data::DateTime(dt) => format!("{}", dt.as_f64()),
+            Data::DateTimeIso(s) | Data::DurationIso(s) => s.clone(),
+            Data::Error(e) => format!("{e:?}"),
+        }
+    };
+
+    let Ok(mut wb) = open_workbook_auto(path) else {
+        return (Vec::new(), None);
+    };
+    let Ok(range) = wb.worksheet_range(sheet) else {
+        return (Vec::new(), None);
+    };
+    let grid: Vec<Vec<String>> = range
+        .rows()
+        .map(|r| r.iter().map(to_s).collect())
+        .collect();
+
+    // Header row = the first row that fills most of the width (mirrors the Excel
+    // diff's detector); SDTM specs put it after the metadata block.
+    let width = grid.iter().map(|r| r.len()).max().unwrap_or(0);
+    let header_idx = grid.iter().position(|r| {
+        let filled = r.iter().filter(|c| !c.trim().is_empty()).count();
+        width >= 2 && filled >= (width * 8 + 9) / 10
+    });
+    let headers = header_idx.map(|i| grid[i].clone()).unwrap_or_default();
+    let start = header_idx.map(|i| i + 1).unwrap_or(0);
+
+    // Find the variable row: first column equals var_name (trimmed).
+    let row = grid[start..]
+        .iter()
+        .find(|r| r.first().map(|c| c.trim()) == Some(var_name))
+        .cloned();
+
+    (headers, row)
+}
+
 /// Copy `src` into the track's snapshots dir and build the Snapshot record.
 /// Does NOT push to the track or persist the manifest (caller does that), but it
 /// does need the current snapshot count to assign the next sequence number.

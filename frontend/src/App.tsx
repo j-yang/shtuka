@@ -69,11 +69,30 @@ export default function App() {
 
   return (
     <div className="h-full flex flex-col bg-white">
+      {/* Thin brand-gradient accent line at the very top. */}
+      <div className="h-0.5 bg-gradient-to-r from-indigo-500 via-violet-500 to-indigo-500 flex-shrink-0" />
       <header className="px-4 py-2.5 border-b border-gray-200 flex items-center justify-between bg-white flex-shrink-0">
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2">
-            <div className="w-2.5 h-2.5 rounded-full bg-indigo-500" />
-            <span className="font-semibold text-sm tracking-tight">shtuka</span>
+            {/* Brand mark: the Cyrillic ш (shtuka), echoing the app icon. */}
+            <svg width="20" height="20" viewBox="0 0 1024 1024" className="rounded-[5px] shadow-sm" aria-label="shtuka">
+              <defs>
+                <linearGradient id="brand" x1="0" y1="0" x2="1" y2="1">
+                  <stop offset="0" stopColor="#6366f1" />
+                  <stop offset="1" stopColor="#7c3aed" />
+                </linearGradient>
+              </defs>
+              <rect width="1024" height="1024" rx="224" fill="url(#brand)" />
+              <g fill="#fff">
+                <rect x="276" y="320" width="92" height="320" rx="18" />
+                <rect x="466" y="320" width="92" height="320" rx="18" />
+                <rect x="656" y="320" width="92" height="320" rx="18" />
+                <rect x="276" y="620" width="472" height="92" rx="18" />
+              </g>
+            </svg>
+            <span className="font-semibold text-sm tracking-tight bg-gradient-to-r from-indigo-600 to-violet-600 bg-clip-text text-transparent">
+              shtuka
+            </span>
           </div>
           <div className="flex items-center gap-1 ml-2">
             {tab('folders', 'Folders')}
@@ -136,7 +155,7 @@ export default function App() {
               <DualTree comparison={comparison} onOpenDiff={openDiff} />
             ) : (
               <div className="flex-1 flex flex-col items-center justify-center text-gray-400">
-                <div className="text-4xl mb-2 opacity-30">⇌</div>
+                <div className="text-4xl mb-2 bg-gradient-to-br from-indigo-400 to-violet-400 bg-clip-text text-transparent">⇌</div>
                 <div className="text-sm">Select two folders and click Compare</div>
                 <div className="text-xs mt-1 text-gray-300">
                   Supports text, CSV, Excel (.xlsx), Word (.docx), PDF, RTF

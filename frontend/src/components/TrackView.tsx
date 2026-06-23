@@ -317,6 +317,7 @@ function TrackDetail({ root, track, onBack, onUpdate }: TrackDetailProps) {
           label={`${track.name}: v${pair[0]} → v${pair[1]}`}
           fetchKey={`${track.id}:${pair[0]}:${pair[1]}`}
           fetcher={() => DiffSnapshots(root, track.id, pair[0], pair[1]) as Promise<DiffResult>}
+          trackContext={{ root, id: track.id }}
           onClose={() => setPair(null)}
         />
       )}

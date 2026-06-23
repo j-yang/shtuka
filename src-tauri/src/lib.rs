@@ -149,6 +149,22 @@ async fn diff_snapshots(
         .map_err(|e| e.to_string())?
 }
 
+/// Trace how one variable (a row in an Excel mapping spec) evolved across all
+/// snapshots of a track.
+#[tauri::command]
+async fn variable_history(
+    root: String,
+    id: String,
+    sheet: String,
+    var_name: String,
+) -> Result<track::VarHistory, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        track::variable_history(&root, &id, &sheet, &var_name)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Compare two folders (file-level add/remove/modify/rename via content hashing).
 #[tauri::command]
 async fn compare_folders(path_a: String, path_b: String) -> Result<folder::Comparison, String> {
@@ -302,6 +318,7 @@ pub fn run() {
             create_track,
             take_snapshot,
             diff_snapshots,
+            variable_history,
             render_pdf_page,
             pdf_doc_diff,
             pdf_page_changes,

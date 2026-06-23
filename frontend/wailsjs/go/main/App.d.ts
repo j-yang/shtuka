@@ -9,6 +9,7 @@ import type {
   DocDiff,
   PageChange,
   PageLink,
+  VarHistory,
 } from '../../src/types';
 
 export function CompareFolders(arg1: string, arg2: string): Promise<Comparison>;
@@ -37,6 +38,12 @@ export function DiffSnapshots(
   seqA: number,
   seqB: number
 ): Promise<DiffResult>;
+export function VariableHistory(
+  root: string,
+  id: string,
+  sheet: string,
+  varName: string
+): Promise<VarHistory>;
 
 export function RenderPdfPage(
   path: string,

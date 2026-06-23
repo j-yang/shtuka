@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
-import { ExcelResult, SheetDiff, GridRow } from '../types';
+import { ExcelResult, SheetDiff, GridRow, TrackContext } from '../types';
+import { VarHistoryView } from './VarHistoryView';
 
 // Tab color reflects the sheet's overall status.
 const tabStatusClass: Record<SheetDiff['status'], string> = {
@@ -16,12 +17,14 @@ const tabDot: Record<SheetDiff['status'], string> = {
   equal: 'bg-gray-300',
 };
 
-export function ExcelDiffPane({ result }: { result: ExcelResult }) {
+export function ExcelDiffPane({ result, trackContext }: { result: ExcelResult; trackContext?: TrackContext }) {
   // Show whole sheets flattened; the row toggle collapses unchanged runs.
   const [showAllRows, setShowAllRows] = useState(true);
   // Unchanged sheets are hidden by default; this reveals them.
   const [showAllSheets, setShowAllSheets] = useState(false);
   const [activeName, setActiveName] = useState<string | null>(null);
+  // When in a Track snapshot diff, clicking a variable name opens its history.
+  const [histVar, setHistVar] = useState<string | null>(null);
 
   const changedCount = result.sheets.filter(s => s.status !== 'equal').length;
 
@@ -86,9 +89,24 @@ export function ExcelDiffPane({ result }: { result: ExcelResult }) {
       </div>
 
       {sheet ? (
-        <SheetGrid key={sheet.name} sheet={sheet} showAll={showAllRows} />
+        <SheetGrid
+          key={sheet.name}
+          sheet={sheet}
+          showAll={showAllRows}
+          onVar={trackContext ? setHistVar : undefined}
+        />
       ) : (
         <div className="p-4 text-gray-400 text-sm">No sheets</div>
+      )}
+
+      {trackContext && sheet && histVar && (
+        <VarHistoryView
+          root={trackContext.root}
+          trackId={trackContext.id}
+          sheet={sheet.name}
+          varName={histVar}
+          onClose={() => setHistVar(null)}
+        />
       )}
     </div>
   );
@@ -120,7 +138,7 @@ interface DisplayItem {
   fromIdx?: number;
 }
 
-function SheetGrid({ sheet, showAll }: { sheet: SheetDiff; showAll: boolean }) {
+function SheetGrid({ sheet, showAll, onVar }: { sheet: SheetDiff; showAll: boolean; onVar?: (varName: string) => void }) {
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
 
   // Decide which unchanged rows to hide. Keep CONTEXT rows around any change.
@@ -214,10 +232,11 @@ function SheetGrid({ sheet, showAll }: { sheet: SheetDiff; showAll: boolean }) {
                   rows={rows}
                   baseIdx={item.fromIdx!}
                   onCollapse={() => toggle(item.fromIdx!)}
+                  onVar={onVar}
                 />
               );
             }
-            return <Row key={`r-${item.index}`} row={item.row!} />;
+            return <Row key={`r-${item.index}`} row={item.row!} onVar={onVar} />;
           })}
         </tbody>
       </table>
@@ -228,10 +247,12 @@ function SheetGrid({ sheet, showAll }: { sheet: SheetDiff; showAll: boolean }) {
 function RowsFragment({
   rows,
   onCollapse,
+  onVar,
 }: {
   rows: GridRow[];
   baseIdx: number;
   onCollapse: () => void;
+  onVar?: (varName: string) => void;
 }) {
   return (
     <>
@@ -245,7 +266,7 @@ function RowsFragment({
         </td>
       </tr>
       {rows.map((r, i) => (
-        <Row key={i} row={r} />
+        <Row key={i} row={r} onVar={onVar} />
       ))}
     </>
   );
@@ -258,10 +279,15 @@ const rowBg: Record<GridRow['status'], string> = {
   equal: '',
 };
 
-function Row({ row }: { row: GridRow }) {
+function Row({ row, onVar }: { row: GridRow; onVar?: (varName: string) => void }) {
   // Emphasize a detected, unchanged header row; if the header row itself changed,
   // its change status colors take precedence.
   const headerStyle = row.header && row.status === 'equal';
+  // First cell is the variable name in mapping specs; make it the history entry
+  // point on data rows when track context is available.
+  const c0 = row.cells[0];
+  const varName = (c0?.new || c0?.old || '').trim();
+  const canHistory = !!onVar && !row.header && !!varName;
   return (
     <tr className={`${rowBg[row.status]} ${headerStyle ? 'bg-slate-100 font-semibold text-slate-800' : ''}`}>
       <td className="sticky left-0 z-10 bg-inherit border border-gray-200 px-2 py-1 text-gray-400 whitespace-nowrap text-[10px]">
@@ -273,9 +299,20 @@ function Row({ row }: { row: GridRow }) {
           <span>{row.rowB || row.rowA}</span>
         )}
       </td>
-      {row.cells.map((c, ci) => (
-        <Cell key={ci} change={c} header={headerStyle} />
-      ))}
+      {row.cells.map((c, ci) =>
+        ci === 0 && canHistory ? (
+          <td
+            key={ci}
+            onClick={() => onVar!(varName)}
+            title={`View "${varName}" history across versions`}
+            className="border border-gray-200 px-2 py-1 whitespace-nowrap min-w-[3rem] max-w-[28rem] truncate text-indigo-700 underline decoration-dotted cursor-pointer hover:bg-indigo-50"
+          >
+            {c.new || c.old}
+          </td>
+        ) : (
+          <Cell key={ci} change={c} header={headerStyle} />
+        )
+      )}
     </tr>
   );
 }
