@@ -222,7 +222,6 @@ mod tests {
 
     #[test]
     fn page_number_change_pairs_as_replace() {
-        // The exact TOC pattern from the real PDFs: same line, page 17 -> 18.
         let a = sv(&["Section A.1 Overview .... 17"]);
         let b = sv(&["Section A.1 Overview .... 18"]);
         let r = build_text_result("a", "b", a, b);
