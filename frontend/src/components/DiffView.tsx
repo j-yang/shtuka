@@ -170,6 +170,7 @@ interface PaneLine {
 }
 
 const TEXT_CONTEXT = 3; // unchanged lines kept around a change before collapsing
+const MAX_RENDER_ROWS = 5000; // cap rendered rows so huge all-different diffs don't freeze the UI
 
 function TextDiffPane({
   result,
@@ -218,7 +219,7 @@ function TextDiffPane({
   // Decide which rows to keep: any changed row plus TEXT_CONTEXT around it.
   // Unchanged gaps collapse into expandable markers so huge diffs (thousands of
   // PDF pages) render only a few hundred rows instead of hundreds of thousands.
-  const segments = useMemo(() => {
+  const { segments, truncatedAt } = useMemo(() => {
     const keep = new Array(total).fill(false);
     for (let i = 0; i < total; i++) {
       if (leftLines[i].type !== 'equal' || rightLines[i].type !== 'equal') {
@@ -227,15 +228,36 @@ function TextDiffPane({
         }
       }
     }
+    // Hard cap on rendered rows. When two files differ on nearly every line, the
+    // collapsing above keeps almost everything, and rendering tens of thousands
+    // of rows synchronously freezes the webview. Stop emitting rows past the cap
+    // and report where we cut so the UI can show a notice.
     const segs: { kind: 'rows' | 'gap'; from: number; to: number }[] = [];
     let i = 0;
+    let kept = 0;
+    let cut = -1;
     while (i < total) {
       const start = i;
       const k = keep[i];
       while (i < total && keep[i] === k) i++;
-      segs.push({ kind: k ? 'rows' : 'gap', from: start, to: i });
+      if (k) {
+        if (kept >= MAX_RENDER_ROWS) {
+          cut = start; // already over budget — drop this and the rest
+          break;
+        }
+        let end = i;
+        if (kept + (end - start) > MAX_RENDER_ROWS) {
+          end = start + (MAX_RENDER_ROWS - kept);
+          cut = end;
+        }
+        segs.push({ kind: 'rows', from: start, to: end });
+        kept += end - start;
+        if (cut >= 0) break;
+      } else {
+        segs.push({ kind: 'gap', from: start, to: i });
+      }
     }
-    return segs;
+    return { segments: segs, truncatedAt: cut };
   }, [leftLines, rightLines, total]);
 
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
@@ -307,22 +329,30 @@ function TextDiffPane({
     });
 
   return (
-    <>
-      <div
-        ref={leftRef}
-        onScroll={onScroll('left')}
-        className="flex-1 overflow-auto border-r border-gray-200 font-mono text-xs"
-      >
-        {renderPane(leftLines, 'l')}
+    <div className="flex-1 flex flex-col min-w-0">
+      {truncatedAt >= 0 && (
+        <div className="px-3 py-1.5 bg-amber-50 border-b border-amber-200 text-[11px] text-amber-800 flex-shrink-0">
+          ⚠ Showing the first {MAX_RENDER_ROWS.toLocaleString()} changed lines of {total.toLocaleString()}.
+          The files differ too extensively to render in full.
+        </div>
+      )}
+      <div className="flex-1 flex overflow-hidden">
+        <div
+          ref={leftRef}
+          onScroll={onScroll('left')}
+          className="flex-1 overflow-auto border-r border-gray-200 font-mono text-xs"
+        >
+          {renderPane(leftLines, 'l')}
+        </div>
+        <div
+          ref={rightRef}
+          onScroll={onScroll('right')}
+          className="flex-1 overflow-auto font-mono text-xs"
+        >
+          {renderPane(rightLines, 'r')}
+        </div>
       </div>
-      <div
-        ref={rightRef}
-        onScroll={onScroll('right')}
-        className="flex-1 overflow-auto font-mono text-xs"
-      >
-        {renderPane(rightLines, 'r')}
-      </div>
-    </>
+    </div>
   );
 }
 

@@ -63,6 +63,15 @@ impl Op {
 /// fall back to linear-space Hirschberg so memory stays bounded.
 const MAX_LCS_CELLS: usize = 4 << 20;
 
+/// Hirschberg is O(n*m) in TIME even though it's linear in space, so a large
+/// differing segment with no patience anchors (e.g. two files where almost every
+/// line differs) would otherwise take tens of seconds and freeze the UI. Above
+/// this cell count we stop computing an optimal LCS and emit a straight
+/// block alignment instead (delete all of A, insert all of B for the segment) —
+/// the result is still correct, just not minimal. 16M cells ≈ a 4000x4000
+/// segment, which Hirschberg handles in well under a second.
+const MAX_HIRSCHBERG_CELLS: usize = 16 << 20;
+
 /// Diff returns an edit script aligning `a` and `b`.
 pub fn diff(a: &[String], b: &[String]) -> Vec<Op> {
     let mut out: Vec<Op> = Vec::with_capacity(a.len() + b.len());
@@ -132,10 +141,22 @@ fn diff_middle(a: &[String], b: &[String], off_a: usize, off_b: usize, out: &mut
 }
 
 fn solve_exact(a: &[String], b: &[String], off_a: usize, off_b: usize, out: &mut Vec<Op>) {
-    if a.len().saturating_mul(b.len()) <= MAX_LCS_CELLS {
+    let cells = a.len().saturating_mul(b.len());
+    if cells <= MAX_LCS_CELLS {
         lcs_full(a, b, off_a, off_b, out);
-    } else {
+    } else if cells <= MAX_HIRSCHBERG_CELLS {
         hirschberg(a, b, off_a, off_b, out);
+    } else {
+        // Too large for an optimal diff in reasonable time: emit a block
+        // replacement (all of A deleted, all of B inserted). text.rs then pairs
+        // them positionally into Replace rows, so the user still sees an aligned
+        // side-by-side — just without minimal-edit precision in this huge region.
+        for (i, av) in a.iter().enumerate() {
+            out.push(Op::delete(off_a + i, av));
+        }
+        for (j, bv) in b.iter().enumerate() {
+            out.push(Op::insert(off_b + j, bv));
+        }
     }
 }
 
@@ -437,5 +458,19 @@ mod tests {
         let mut out: Vec<Op> = Vec::new();
         hirschberg(&a, &b, 0, 0, &mut out);
         validate(&a, &b, &out);
+    }
+
+    // Two large files where every line differs and there are no patience anchors
+    // is the pathological case that used to take ~30s in Hirschberg and freeze
+    // the UI. The cell-count cap must keep this fast while still producing a
+    // valid edit script. (Timing isn't asserted — correctness + completion is;
+    // before the fix this test would effectively hang.)
+    #[test]
+    fn diff_all_different_is_fast_and_valid() {
+        let n = 20_000;
+        let a: Vec<String> = (0..n).map(|i| format!("alpha line {i} aaaa")).collect();
+        let b: Vec<String> = (0..n).map(|i| format!("BETA line {i} bbbb")).collect();
+        let ops = diff(&a, &b);
+        validate(&a, &b, &ops);
     }
 }
