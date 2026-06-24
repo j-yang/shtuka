@@ -5,6 +5,7 @@
 use crate::myers::{diff, OpType};
 use calamine::{open_workbook_auto, Data, Reader};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CellChange {
@@ -125,16 +126,8 @@ fn read_workbook(path: &str, res: &mut ExcelResult, _side: &str) -> Result<Workb
                 truncated_rows = true;
                 break;
             }
-            let mut cells: Vec<String> = row.iter().map(cell_to_string).collect();
-            if cells.len() > MAX_EXCEL_COLS {
-                cells.truncate(MAX_EXCEL_COLS);
-                truncated_cols = true;
-            }
-            // Trim fully-trailing-empty cells to mirror excelize's row width,
-            // which only extends to the last non-empty cell.
-            while cells.last().map(|c| c.is_empty()).unwrap_or(false) {
-                cells.pop();
-            }
+            let (cells, tc) = normalize_row(row);
+            truncated_cols |= tc;
             rows.push(cells);
         }
         // Drop trailing fully-empty rows (calamine pads to the used range).
@@ -150,6 +143,58 @@ fn read_workbook(path: &str, res: &mut ExcelResult, _side: &str) -> Result<Workb
         out.insert(name, rows);
     }
     Ok(out)
+}
+
+/// Render one worksheet row to trimmed string cells, returning (cells, cols_truncated).
+/// Shared by read_workbook and the folder-level content equality check so both
+/// see exactly the same normalized data.
+fn normalize_row(row: &[Data]) -> (Vec<String>, bool) {
+    let mut cells: Vec<String> = row.iter().map(cell_to_string).collect();
+    let mut truncated = false;
+    if cells.len() > MAX_EXCEL_COLS {
+        cells.truncate(MAX_EXCEL_COLS);
+        truncated = true;
+    }
+    // Trim fully-trailing-empty cells to mirror excelize's row width,
+    // which only extends to the last non-empty cell.
+    while cells.last().map(|c| c.is_empty()).unwrap_or(false) {
+        cells.pop();
+    }
+    (cells, truncated)
+}
+
+/// Content fingerprint of a workbook: every sheet's normalized cell grid, with
+/// no file-level metadata. Two .xlsx files with identical cells produce the same
+/// fingerprint even though their raw bytes differ (zip timestamps, docProps
+/// last-modified, recalc flags). Used by the folder diff to avoid flagging a
+/// workbook as "modified" when only this invisible packaging noise changed.
+/// Returns None if the file can't be opened as a workbook (caller falls back).
+pub fn content_fingerprint(path: &str) -> Option<String> {
+    let mut wb = open_workbook_auto(path).ok()?;
+    let mut hasher = Sha256::new();
+    for name in wb.sheet_names().to_vec() {
+        let Ok(range) = wb.worksheet_range(&name) else { continue };
+        hasher.update(name.as_bytes());
+        hasher.update([0u8]);
+        let mut rows: Vec<Vec<String>> = Vec::new();
+        for row in range.rows() {
+            if rows.len() >= MAX_EXCEL_ROWS {
+                break;
+            }
+            rows.push(normalize_row(row).0);
+        }
+        while rows.last().map(|r| r.is_empty()).unwrap_or(false) {
+            rows.pop();
+        }
+        for r in &rows {
+            for c in r {
+                hasher.update(c.as_bytes());
+                hasher.update([0x1f]); // unit separator between cells
+            }
+            hasher.update([0x1e]); // record separator between rows
+        }
+    }
+    Some(crate::folder_hex(&hasher.finalize()))
 }
 
 /// cell_to_string renders a raw cell value the way excelize RawCellValue does:

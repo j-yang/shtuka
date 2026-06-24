@@ -136,6 +136,11 @@ export interface DiffResult {
 
 // --- XML (define.xml, XSLT-rendered side-by-side) --------------------------
 
+export interface XmlItemChg {
+  value: string;
+  kind: 'added' | 'removed' | 'modified';
+}
+
 export interface XmlChange {
   kind: 'added' | 'removed' | 'modified';
   elemType: string;
@@ -146,6 +151,17 @@ export interface XmlChange {
   varName?: string;
   changedAttrs?: string[];
   changedKeys?: string[];
+  // Rendered variable-table columns this change touches (name|label|type|role|
+  // length|terms|origin). Empty ⇒ whole row (added/removed variable).
+  cols?: string[];
+  // For CodeList: the specific terms that changed, and whether the caption did.
+  items?: XmlItemChg[];
+  captionChanged?: boolean;
+  // Value-level (VLM) location hints.
+  valueLevel?: boolean;
+  parentOid?: string;
+  whereVar?: string;
+  whereVal?: string;
 }
 
 export interface XmlResult {

@@ -78,9 +78,16 @@ pub fn compare(path_a: &str, path_b: &str) -> io::Result<Comparison> {
     let common_set: HashSet<&str> = common.iter().copied().collect();
 
     // Files needing a content hash to decide unchanged-vs-modified.
+    // Excel workbooks are zip containers whose raw bytes change even when every
+    // cell is identical (zip timestamps, docProps last-modified, recalc flags),
+    // so a byte hash gives false "modified". Those go through a content
+    // fingerprint (cells only) instead — handled separately below.
     let mut to_hash: Vec<&Path> = Vec::new();
+    let mut excel_common: Vec<&str> = Vec::new();
     for &p in &common {
-        if a_set[p].size != b_set[p].size {
+        if is_excel(p) {
+            excel_common.push(p);
+        } else if a_set[p].size != b_set[p].size {
             cmp.modified.push(p.to_string()); // different size ⇒ definitely changed
         } else {
             to_hash.push(a_set[p].abs.as_path());
@@ -128,6 +135,35 @@ pub fn compare(path_a: &str, path_b: &str) -> io::Result<Comparison> {
         match (hash_of(a_set[p]), hash_of(b_set[p])) {
             (Some(ha), Some(hb)) if ha == hb => cmp.unchanged.push(p.to_string()),
             _ => cmp.modified.push(p.to_string()),
+        }
+    }
+
+    // Excel workbooks: compare by content fingerprint (cells only), in parallel.
+    // A workbook is "unchanged" only if both sides parse and fingerprint equal;
+    // if either fails to parse, fall back to a byte hash so we never miss a real
+    // change.
+    let excel_verdicts: Vec<(&str, bool)> = excel_common
+        .par_iter()
+        .map(|&p| {
+            let fa = crate::excel::content_fingerprint(a_set[p].abs.to_string_lossy().as_ref());
+            let fb = crate::excel::content_fingerprint(b_set[p].abs.to_string_lossy().as_ref());
+            let same = match (fa, fb) {
+                (Some(ha), Some(hb)) => ha == hb,
+                // Unparseable on a side: fall back to raw-byte equality.
+                _ => hash_file(&a_set[p].abs)
+                    .ok()
+                    .zip(hash_file(&b_set[p].abs).ok())
+                    .map(|(ha, hb)| ha == hb)
+                    .unwrap_or(false),
+            };
+            (p, same)
+        })
+        .collect();
+    for (p, same) in excel_verdicts {
+        if same {
+            cmp.unchanged.push(p.to_string());
+        } else {
+            cmp.modified.push(p.to_string());
         }
     }
 
@@ -213,6 +249,13 @@ fn walk(root: &str) -> io::Result<Vec<FileMeta>> {
         });
     }
     Ok(files)
+}
+
+/// True for spreadsheet files whose raw bytes are unstable across saves (zip
+/// packaging), so the folder diff compares them by cell content instead.
+fn is_excel(rel: &str) -> bool {
+    let lower = rel.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    matches!(lower.as_str(), "xlsx" | "xlsm" | "xls")
 }
 
 fn hash_file(path: &Path) -> io::Result<String> {

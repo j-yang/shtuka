@@ -59,6 +59,46 @@ pub struct XmlChange {
     /// the UI can map them to table columns and tint only those cells.
     #[serde(rename = "changedKeys", default, skip_serializing_if = "Vec::is_empty")]
     pub changed_keys: Vec<String>,
+    /// Semantic columns of the rendered variable table that this change affects:
+    /// any of name | label | type | role | length | terms | origin. The UI tints
+    /// exactly those cells instead of the whole row. Empty ⇒ tint whole row
+    /// (e.g. an added/removed variable).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cols: Vec<String>,
+    /// For CodeList: the individual terms (CodedValue) that were added/removed/
+    /// modified, so the UI tints only those rows — not the whole codelist.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub items: Vec<ItemChg>,
+    /// For CodeList: true when the codelist's own attributes (Name/etc.) changed,
+    /// so the UI should also tint the caption (not just term rows).
+    #[serde(rename = "captionChanged", default, skip_serializing_if = "is_false")]
+    pub caption_changed: bool,
+    /// True for value-level ItemDefs (OID like IT.EG.EGORRES.EG.EGTESTCD.EQ.EGALL)
+    /// — these render in a collapsible `tr.vlm` sub-table, not the main row.
+    #[serde(rename = "valueLevel", default, skip_serializing_if = "is_false")]
+    pub value_level: bool,
+    /// For value-level changes: the parent variable's ItemDef OID (IT.EG.EGORRES),
+    /// used to find the VLM container rows (whose class carries it).
+    #[serde(rename = "parentOid", default, skip_serializing_if = "String::is_empty")]
+    pub parent_oid: String,
+    /// For value-level changes: the where-clause variable + value (EGTESTCD, EGALL)
+    /// parsed from the OID, to match the specific VLM row by its rendered text.
+    #[serde(rename = "whereVar", default, skip_serializing_if = "String::is_empty")]
+    pub where_var: String,
+    #[serde(rename = "whereVal", default, skip_serializing_if = "String::is_empty")]
+    pub where_val: String,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+/// A single changed CodeList term, keyed by its CodedValue (the text rendered in
+/// the codelist table's first cell). `kind` ∈ added | removed | modified.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ItemChg {
+    pub value: String,
+    pub kind: String,
 }
 
 pub fn xml_diff(path_a: &str, path_b: &str) -> Result<XmlResult, String> {
@@ -146,14 +186,39 @@ fn mk_change(kind: &str, n: roxmltree::Node, changed_attrs: Vec<String>) -> XmlC
     let oid = n.attribute("OID").unwrap_or("").to_string();
     let name = n.attribute("Name").unwrap_or("").to_string();
     let label = if !name.is_empty() { name.clone() } else { oid.clone() };
-    // ItemDef OID convention IT.<DOMAIN>.<VAR> -> domain for group-scoped locate.
-    let (domain, var_name) = if elem_type == "ItemDef" {
-        let parts: Vec<&str> = oid.splitn(3, '.').collect();
-        let dom = if parts.len() == 3 { parts[1].to_string() } else { String::new() };
-        (dom, name)
-    } else {
-        (String::new(), String::new())
-    };
+
+    // ItemDef OID conventions:
+    //   regular:      IT.<DOMAIN>.<VAR>                              (3 segments)
+    //   value-level:  IT.<DOMAIN>.<VAR>.<WDOM>.<WVAR>.<COMP>.<VAL>   (>3 segments)
+    // The value-level rows render in a collapsible VLM sub-table keyed by the
+    // parent variable's OID, matched on the where-clause text "<WVAR> = <VAL>".
+    let mut domain = String::new();
+    let mut var_name = String::new();
+    let mut value_level = false;
+    let mut parent_oid = String::new();
+    let mut where_var = String::new();
+    let mut where_val = String::new();
+    if elem_type == "ItemDef" {
+        let parts: Vec<&str> = oid.split('.').collect();
+        if parts.len() >= 3 {
+            domain = parts[1].to_string();
+        }
+        if parts.len() > 3 {
+            value_level = true;
+            parent_oid = parts[..3].join(".");
+            // trailing where segments: <WDOM> <WVAR> <COMP> <VAL...>
+            if parts.len() >= 5 {
+                where_var = parts[4].to_string();
+            }
+            if let Some(last) = parts.last() {
+                where_val = (*last).to_string();
+            }
+            var_name = name.clone();
+        } else {
+            var_name = name.clone();
+        }
+    }
+
     // Bare attribute names from "Name: old → new" entries, for column mapping.
     let changed_keys: Vec<String> = changed_attrs
         .iter()
@@ -162,7 +227,7 @@ fn mk_change(kind: &str, n: roxmltree::Node, changed_attrs: Vec<String>) -> XmlC
         .collect();
     XmlChange {
         kind: kind.into(),
-        elem_type: local_tag(n).to_string(),
+        elem_type,
         oid,
         label,
         id_prefix: id_prefix(local_tag(n)).to_string(),
@@ -170,7 +235,121 @@ fn mk_change(kind: &str, n: roxmltree::Node, changed_attrs: Vec<String>) -> XmlC
         var_name,
         changed_attrs,
         changed_keys,
+        cols: Vec::new(),
+        items: Vec::new(),
+        caption_changed: false,
+        value_level,
+        parent_oid,
+        where_var,
+        where_val,
     }
+}
+
+/// Canonical signature of an element subtree (tag + sorted attrs + text +
+/// children, recursively). Two structurally identical subtrees produce the same
+/// string, so we can detect a change in any descendant by comparing signatures.
+fn subtree_sig(n: roxmltree::Node) -> String {
+    let mut s = String::new();
+    s.push('<');
+    s.push_str(n.tag_name().name());
+    let mut attrs: Vec<(&str, &str)> = n.attributes().map(|a| (a.name(), a.value())).collect();
+    attrs.sort_unstable();
+    for (k, v) in attrs {
+        s.push(' ');
+        s.push_str(k);
+        s.push('=');
+        s.push_str(v);
+    }
+    s.push('>');
+    let t = direct_text(n);
+    if !t.is_empty() {
+        s.push_str(&t);
+    }
+    for c in n.children().filter(|c| c.is_element()) {
+        s.push_str(&subtree_sig(c));
+    }
+    s
+}
+
+/// Signature of the first child element with the given local tag name, or "" if
+/// there's no such child. Used to compare one logical "column" (Description,
+/// Origin, CodeListRef…) of an ItemDef across the two sides.
+fn child_sig(n: roxmltree::Node, tag: &str) -> String {
+    n.children()
+        .filter(|c| c.is_element())
+        .find(|c| c.tag_name().name() == tag)
+        .map(subtree_sig)
+        .unwrap_or_default()
+}
+
+/// Which rendered-table COLUMNS of an ItemDef changed. The define.xml variable
+/// table has fixed columns (Variable, Label, Type, Role, Length, Controlled
+/// Terms, Origin); we attribute each change to the specific column so the UI
+/// tints only those cells instead of the whole row. Role lives on the ItemRef,
+/// not the ItemDef, so it isn't covered here.
+fn item_def_columns(a: roxmltree::Node, b: roxmltree::Node) -> Vec<String> {
+    let mut cols = Vec::new();
+    if a.attribute("Name") != b.attribute("Name") {
+        cols.push("name".to_string());
+    }
+    if child_sig(a, "Description") != child_sig(b, "Description") {
+        cols.push("label".to_string());
+    }
+    if a.attribute("DataType") != b.attribute("DataType") {
+        cols.push("type".to_string());
+    }
+    if a.attribute("Length") != b.attribute("Length")
+        || a.attribute("DisplayFormat") != b.attribute("DisplayFormat")
+        || a.attribute("SignificantDigits") != b.attribute("SignificantDigits")
+    {
+        cols.push("length".to_string());
+    }
+    if child_sig(a, "CodeListRef") != child_sig(b, "CodeListRef")
+        || child_sig(a, "ValueListRef") != child_sig(b, "ValueListRef")
+    {
+        cols.push("terms".to_string());
+    }
+    if child_sig(a, "Origin") != child_sig(b, "Origin")
+        || a.attribute("CommentOID") != b.attribute("CommentOID")
+    {
+        cols.push("origin".to_string());
+    }
+    cols
+}
+
+/// Child elements of a CodeList keyed by their CodedValue (the term text).
+fn coded_items<'a>(n: roxmltree::Node<'a, 'a>) -> BTreeMap<String, roxmltree::Node<'a, 'a>> {
+    n.children()
+        .filter(|c| c.is_element())
+        .filter_map(|c| c.attribute("CodedValue").map(|v| (v.to_string(), c)))
+        .collect()
+}
+
+/// For a modified CodeList: which individual terms (by CodedValue) were added,
+/// removed, or modified, plus whether the codelist's own attributes (e.g. Name)
+/// changed (caption). Lets the UI tint only the affected term rows.
+fn codelist_changes(a: roxmltree::Node, b: roxmltree::Node) -> (Vec<ItemChg>, bool) {
+    let caption_changed = a.attribute("Name") != b.attribute("Name")
+        || a.attribute("DataType") != b.attribute("DataType");
+    let am = coded_items(a);
+    let bm = coded_items(b);
+    let mut items = Vec::new();
+    for (k, bn) in &bm {
+        match am.get(k) {
+            None => items.push(ItemChg { value: k.clone(), kind: "added".into() }),
+            Some(an) => {
+                if subtree_sig(*an) != subtree_sig(*bn) {
+                    items.push(ItemChg { value: k.clone(), kind: "modified".into() });
+                }
+            }
+        }
+    }
+    for k in am.keys() {
+        if !bm.contains_key(k) {
+            items.push(ItemChg { value: k.clone(), kind: "removed".into() });
+        }
+    }
+    (items, caption_changed)
 }
 
 /// Compare two matched element nodes: their attributes, then their children.
@@ -238,6 +417,20 @@ fn diff_node_inner(a: roxmltree::Node, b: roxmltree::Node, out: &mut Vec<XmlChan
     // its terms change, but the individual EnumeratedItems don't clutter the list).
     if locatable && (own_changed || descendant_changed) {
         let mut ch = mk_change("modified", b, attr_changes);
+        let tag = local_tag(b);
+        // Map the change to specific rendered columns / term rows so the UI can
+        // tint precisely rather than lighting the whole row or whole codelist.
+        match tag {
+            "ItemDef" => {
+                ch.cols = item_def_columns(a, b);
+            }
+            "CodeList" => {
+                let (items, caption) = codelist_changes(a, b);
+                ch.items = items;
+                ch.caption_changed = caption;
+            }
+            _ => {}
+        }
         if ch.changed_attrs.is_empty() {
             ch.changed_attrs.push(if own_changed { "(text changed)".into() } else { "(items changed)".into() });
         }
@@ -360,5 +553,69 @@ mod tests {
     fn single_quotes() {
         let xml = r#"<?xml-stylesheet href='s.xsl' type='text/xsl'?><x/>"#;
         assert_eq!(stylesheet_href(xml).as_deref(), Some("s.xsl"));
+    }
+
+    // A change confined to <def:Origin> (a PDFPageRef was added) must map to the
+    // "origin" column only — not light the whole variable row (bug #3).
+    #[test]
+    fn item_def_change_maps_to_single_column() {
+        let a = r#"<ODM><ItemDef OID="IT.DM.SEX" Name="SEX" DataType="text" Length="1">
+            <def:Origin xmlns:def="d" Type="CRF"><def:DocumentRef leafID="LF.acrf"/></def:Origin>
+        </ItemDef></ODM>"#;
+        let b = r#"<ODM><ItemDef OID="IT.DM.SEX" Name="SEX" DataType="text" Length="1">
+            <def:Origin xmlns:def="d" Type="CRF"><def:DocumentRef leafID="LF.acrf"><def:PDFPageRef PageRefs="9"/></def:DocumentRef></def:Origin>
+        </ItemDef></ODM>"#;
+        let c = tree_diff(a, b).unwrap();
+        assert_eq!(c.len(), 1);
+        assert_eq!(c[0].cols, vec!["origin"]);
+        assert!(!c[0].value_level);
+    }
+
+    // A value-level ItemDef (OID has where-clause segments) is flagged value_level
+    // with its parent OID and where parts parsed out (bug #2).
+    #[test]
+    fn value_level_item_detected() {
+        let a = r#"<ODM><ItemDef OID="IT.EG.EGORRES.EG.EGTESTCD.EQ.EGALL" Name="x" DataType="text" Length="1"/></ODM>"#;
+        let b = r#"<ODM><ItemDef OID="IT.EG.EGORRES.EG.EGTESTCD.EQ.EGALL" Name="x" DataType="text" Length="99"/></ODM>"#;
+        let c = tree_diff(a, b).unwrap();
+        assert_eq!(c.len(), 1);
+        assert!(c[0].value_level);
+        assert_eq!(c[0].parent_oid, "IT.EG.EGORRES");
+        assert_eq!(c[0].where_var, "EGTESTCD");
+        assert_eq!(c[0].where_val, "EGALL");
+        assert_eq!(c[0].cols, vec!["length"]);
+    }
+
+    // A CodeList whose terms change reports the specific terms (added/removed),
+    // not the whole list; caption_changed tracks the codelist's own attrs (bug #1).
+    #[test]
+    fn codelist_reports_only_changed_terms() {
+        let a = r#"<ODM><CodeList OID="CL.X" Name="X">
+            <EnumeratedItem CodedValue="KEEP"/><EnumeratedItem CodedValue="GONE"/>
+        </CodeList></ODM>"#;
+        let b = r#"<ODM><CodeList OID="CL.X" Name="X">
+            <EnumeratedItem CodedValue="KEEP"/><EnumeratedItem CodedValue="NEW"/>
+        </CodeList></ODM>"#;
+        let c = tree_diff(a, b).unwrap();
+        assert_eq!(c.len(), 1);
+        assert_eq!(c[0].elem_type, "CodeList");
+        assert!(!c[0].caption_changed);
+        let mut got: Vec<(String, String)> =
+            c[0].items.iter().map(|i| (i.value.clone(), i.kind.clone())).collect();
+        got.sort();
+        assert_eq!(
+            got,
+            vec![("GONE".to_string(), "removed".to_string()), ("NEW".to_string(), "added".to_string())]
+        );
+    }
+
+    #[test]
+    fn codelist_caption_change_flagged() {
+        let a = r#"<ODM><CodeList OID="CL.X" Name="Old"><EnumeratedItem CodedValue="A"/></CodeList></ODM>"#;
+        let b = r#"<ODM><CodeList OID="CL.X" Name="New"><EnumeratedItem CodedValue="A"/></CodeList></ODM>"#;
+        let c = tree_diff(a, b).unwrap();
+        assert_eq!(c.len(), 1);
+        assert!(c[0].caption_changed);
+        assert!(c[0].items.is_empty());
     }
 }

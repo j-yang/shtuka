@@ -6,31 +6,81 @@ interface XmlDiffViewProps {
   result: XmlResult;
 }
 
-// What each side needs to highlight: anchored ids (ItemGroup/CodeList) and
-// group-scoped variable rows. Each changed variable carries its kind and the
-// set of changed attribute keys so the UI tints only the affected cell(s).
-interface VarChange {
+// What each side needs to highlight, located via the EXACT anchors the
+// define.xml stylesheet emits (no fuzzy text matching):
+//   - vars: regular variable rows, found by the per-row anchor
+//       <a id="IG.<DOMAIN>.<ItemDefOID>"> in the first cell; we tint only the
+//       columns that changed (name|label|type|role|length|terms|origin).
+//   - values: value-level (VLM) sub-rows, found inside the VLM block (rows whose
+//       class carries the parent ItemDef OID) and matched by "<whereVar> = ...".
+//   - codelists: a codelist div#CL.CL.<OID>; we tint only the changed term rows
+//       (by CodedValue text) and the caption only when captionChanged.
+//   - ids: other anchored elements (Methods/Comments) tinted whole.
+interface VarLoc {
+  anchorId: string; // IG.<DOMAIN>.<ItemDefOID>
   kind: string;
-  keys: string[]; // changed attribute names (Length, DataType, ...)
+  cols: string[]; // empty ⇒ whole row
+}
+interface ValueLoc {
+  parentOid: string; // IT.<DOM>.<VAR>
+  whereVar: string;
+  whereVal: string;
+  kind: string;
+  cols: string[];
+}
+interface CodeListLoc {
+  id: string; // CL.CL.<OID> (rendered container id)
+  kind: string;
+  caption: boolean;
+  items: { value: string; kind: string }[];
 }
 interface Payload {
-  ids: Record<string, string>; // anchor id -> kind
-  groups: Record<string, Record<string, VarChange>>; // domain -> { varName: VarChange }
+  ids: Record<string, string>;
+  vars: VarLoc[];
+  values: ValueLoc[];
+  codelists: CodeListLoc[];
 }
 
 function buildPayload(changes: XmlChange[], side: 'a' | 'b'): Payload {
   const ids: Record<string, string> = {};
-  const groups: Record<string, Record<string, VarChange>> = {};
+  const vars: VarLoc[] = [];
+  const values: ValueLoc[] = [];
+  const codelists: CodeListLoc[] = [];
   for (const c of changes) {
     if (c.kind === 'removed' && side !== 'a') continue;
     if (c.kind === 'added' && side !== 'b') continue;
-    if (c.idPrefix) {
+    if (c.elemType === 'ItemDef' && c.valueLevel && c.parentOid) {
+      values.push({
+        parentOid: c.parentOid,
+        whereVar: c.whereVar ?? '',
+        whereVal: c.whereVal ?? '',
+        kind: c.kind,
+        cols: c.cols ?? [],
+      });
+    } else if (c.elemType === 'ItemDef' && c.domain) {
+      // The rendered per-row anchor id is "IG.<DOMAIN>.<ItemDefOID>".
+      vars.push({ anchorId: `IG.${c.domain}.${c.oid}`, kind: c.kind, cols: c.cols ?? [] });
+    } else if (c.elemType === 'CodeList') {
+      // Container id is doubled because the OID already starts with "CL.".
+      codelists.push({
+        id: `${c.idPrefix}${c.oid}`,
+        kind: c.kind,
+        caption: !!c.captionChanged,
+        // A removed term exists only on the OLD (a) side; an added term only on
+        // the NEW (b) side. Modified terms exist on both. Filter per side so we
+        // don't hunt for a term that isn't rendered on this side.
+        items: (c.items ?? []).filter(
+          it =>
+            it.kind === 'modified' ||
+            (it.kind === 'removed' && side === 'a') ||
+            (it.kind === 'added' && side === 'b')
+        ),
+      });
+    } else if (c.idPrefix) {
       ids[`${c.idPrefix}${c.oid}`] = c.kind;
-    } else if (c.elemType === 'ItemDef' && c.domain && c.varName) {
-      (groups[c.domain] ||= {})[c.varName] = { kind: c.kind, keys: c.changedKeys ?? [] };
     }
   }
-  return { ids, groups };
+  return { ids, vars, values, codelists };
 }
 
 function transform(xml: string | undefined, xsl: string | undefined, payload: Payload) {
@@ -68,111 +118,101 @@ function instrument(html: string, p: Payload): string {
 <script>
 (function(){
   var ids = ${JSON.stringify(p.ids)};
-  var groups = ${JSON.stringify(p.groups)};
+  var vars = ${JSON.stringify(p.vars)};
+  var values = ${JSON.stringify(p.values)};
+  var codelists = ${JSON.stringify(p.codelists)};
   function tintEl(el, kind){ if(el) el.classList.add('shtuka-'+kind); }
-  // The ItemGroup anchor the stylesheet emits is <a id="IG.<ItemGroupOID>"/> and
-  // the ItemGroup OID is itself "IG.<domain>" — so the real id is "IG.IG.<domain>".
-  // The anchor is empty; the variable table is its next element sibling(s).
-  function groupContainer(domain){
-    var anchor = document.getElementById('IG.IG.'+domain) || document.getElementById('IG.'+domain);
-    if(!anchor) return null;
-    // Walk forward to the nearest following element that contains a table.
-    var node = anchor.nextElementSibling;
-    for(var i=0;i<8 && node;i++){
-      if(node.tagName==='TABLE') return node;
-      if(node.querySelector && node.querySelector('table')) return node;
-      node = node.nextElementSibling;
+  function mark(el){ if(el) el.setAttribute('data-chg','1'); }
+
+  // Map a variable table's columns to td indices by reading its header <th>
+  // text. The define.xml variable table has fixed columns but their ORDER can
+  // vary slightly by stylesheet version, so resolve by keyword, not constant.
+  function colIndex(table){
+    var map = { name:0, label:1, type:2, role:3, length:4, terms:5, origin:6 }; // sane default
+    if(!table || !table.rows) return map;
+    for(var r=0;r<table.rows.length;r++){
+      var ths = table.rows[r].getElementsByTagName('th');
+      if(!ths.length) continue;
+      var labels=[];
+      for(var i=0;i<table.rows[r].children.length;i++) labels.push((table.rows[r].children[i].textContent||'').toLowerCase());
+      function find(){ for(var a=0;a<arguments.length;a++){ for(var ci=0;ci<labels.length;ci++){ if(labels[ci].indexOf(arguments[a])>=0) return ci; } } return -1; }
+      var m={};
+      m.name=find('variable'); m.label=find('label','description'); m.type=find('type');
+      m.role=find('role'); m.length=find('length','display format'); m.terms=find('controlled terms','iso format','codelist','format');
+      m.origin=find('origin','source','method','comment');
+      for(var k in m){ if(m[k]>=0) map[k]=m[k]; }
+      break;
     }
-    // Fallback: a containerbox ancestor holding a table.
-    var up = anchor.parentElement;
-    for(var j=0;j<6 && up;j++){
-      if(up.querySelector && up.querySelector('table')) return up;
-      up = up.parentElement;
-    }
-    return null;
+    return map;
   }
-  // Map an XML attribute name to the rendered cell's stable CSS class (the XSL
-  // tags data cells: Length/Display-Format -> td.number, Type -> td.datatype,
-  // Role -> td.role). Cell classes are reliable across domains, unlike header
-  // text. Returns null when there's no class-based target.
-  function cellClassFor(key){
-    switch(key){
-      case 'Length': case 'SignificantDigits': case 'DisplayFormat': return 'number';
-      case 'DataType': return 'datatype';
-      case 'Role': return 'role';
-      default: return null;
-    }
-  }
-  // Header keyword fallback for attributes without a stable cell class.
-  function headerKeywords(key){
-    switch(key){
-      case 'Name': return ['variable'];
-      case 'Origin': return ['origin','source','method','comment'];
-      case 'Mandatory': return ['mandatory','core'];
-      case 'CodeListOID': return ['controlled terms','codelist','format'];
-      default: return [key.toLowerCase()];
-    }
-  }
-  function headerLabels(row){
+  // Tint the cells of the row for the given semantic columns. Empty cols = whole row.
+  function tintRowCols(row, kind, cols){
+    if(!cols || !cols.length){ tintEl(row, kind); mark(row); return; }
     var table = row.closest ? row.closest('table') : null;
-    if(!table) return [];
-    // header row = the row containing <th> cells (not necessarily the first tr)
-    var rows = table.rows || [];
-    for(var r=0;r<rows.length;r++){
-      if(rows[r].getElementsByTagName('th').length){
-        var ths = rows[r].children, labels=[];
-        for(var i=0;i<ths.length;i++) labels.push((ths[i].textContent||'').toLowerCase());
-        return labels;
-      }
-    }
-    return [];
-  }
-  // Tint only the cells in a row affected by the changed keys. Prefer the cell's
-  // own class (robust); else match by header keyword; else tint whole row.
-  function tintCells(row, kind, keys){
-    if(!keys || !keys.length){ tintEl(row, kind); return; }
+    var map = colIndex(table);
     var tds = row.children;
-    var any = false;
-    var labels = null;
-    keys.forEach(function(key){
-      var cls = cellClassFor(key);
-      if(cls){
-        for(var i=0;i<tds.length;i++){
-          if(tds[i].className && tds[i].className.indexOf(cls)>=0){ tintEl(tds[i], kind); any=true; }
-        }
-        return;
-      }
-      if(labels===null) labels = headerLabels(row);
-      var kws = headerKeywords(key);
-      for(var ci=0; ci<labels.length && ci<tds.length; ci++){
-        for(var k=0;k<kws.length;k++){
-          if(labels[ci].indexOf(kws[k])>=0){ tintEl(tds[ci], kind); any=true; break; }
-        }
+    var any=false;
+    cols.forEach(function(col){
+      var idx = map[col];
+      if(idx!=null && idx>=0 && idx<tds.length){ tintEl(tds[idx], kind); any=true; }
+    });
+    if(any) mark(row); else { tintEl(row, kind); mark(row); }
+  }
+
+  function apply(){
+    // Other anchored elements (Methods/Comments) — tint whole.
+    Object.keys(ids).forEach(function(id){ var e=document.getElementById(id); tintEl(e, ids[id]); mark(e); });
+
+    // Regular variable rows: locate by the exact per-row anchor the XSL emits.
+    vars.forEach(function(v){
+      var a = document.getElementById(v.anchorId);
+      if(!a) return;
+      var row = a.closest ? a.closest('tr') : null;
+      if(!row) return;
+      if(v.kind==='modified') tintRowCols(row, 'modified', v.cols);
+      else { tintEl(row, v.kind); mark(row); }
+    });
+
+    // Value-level (VLM) rows: the parent variable's VLM block is made of <tr>
+    // whose className contains the parent ItemDef OID. Within it, match the row
+    // whose where-clause cell reads '<whereVar> = "<whereVal>"'.
+    values.forEach(function(v){
+      var rows = document.getElementsByTagName('tr');
+      for(var i=0;i<rows.length;i++){
+        var cn = rows[i].className||'';
+        if(cn.indexOf('vlm')<0 || cn.indexOf(v.parentOid)<0) continue;
+        var txt = (rows[i].textContent||'');
+        // where-clause text looks like: EGTESTCD = "EGALL" (...)
+        if(v.whereVar && txt.indexOf(v.whereVar)<0) continue;
+        if(v.whereVal && txt.indexOf(v.whereVal)<0) continue;
+        if(v.kind==='modified') tintRowCols(rows[i], 'modified', v.cols);
+        else { tintEl(rows[i], v.kind); mark(rows[i]); }
+        break;
       }
     });
-    if(!any) tintEl(row, kind); // nothing matched -> highlight row so nothing is missed
-  }
-  function apply(){
-    // anchored elements (ItemGroup/CodeList) by id
-    Object.keys(ids).forEach(function(id){ tintEl(document.getElementById(id), ids[id]); });
-    // group-scoped ItemDef rows: locate row by variable name, tint changed cells
-    Object.keys(groups).forEach(function(domain){
-      var cont = groupContainer(domain);
+
+    // CodeLists: tint only the changed TERM rows (by CodedValue text), and the
+    // caption only when the codelist's own attributes changed. An added/removed
+    // whole codelist tints its container.
+    codelists.forEach(function(cl){
+      var cont = document.getElementById(cl.id);
       if(!cont) return;
-      var wanted = groups[domain];
-      var cells = cont.getElementsByTagName('td');
-      for(var i=0;i<cells.length;i++){
-        var t=(cells[i].textContent||'').trim();
-        if(wanted.hasOwnProperty(t)){
-          var row = cells[i].closest ? cells[i].closest('tr') : cells[i].parentNode;
-          if(row){
-            var info = wanted[t];
-            if(info.kind === 'modified') tintCells(row, 'modified', info.keys);
-            else tintEl(row, info.kind); // added/removed variable -> whole row
-            row.setAttribute('data-chg', domain+'.'+t);
-          }
-        }
+      if(cl.kind!=='modified'){ tintEl(cont, cl.kind); mark(cont); return; }
+      if(cl.caption){
+        var cap = cont.querySelector ? cont.querySelector('.codelist-caption') : null;
+        tintEl(cap||cont, 'modified'); mark(cap||cont);
       }
+      var trs = cont.getElementsByTagName('tr');
+      (cl.items||[]).forEach(function(it){
+        for(var i=0;i<trs.length;i++){
+          if(trs[i].getElementsByTagName('th').length) continue; // skip header
+          var firstTd = trs[i].getElementsByTagName('td')[0];
+          if(!firstTd) continue;
+          // First cell renders 'CODEDVALUE [*]' — compare the leading token.
+          var cv = (firstTd.textContent||'').replace(/\\s*\\[.*$/,'').trim();
+          if(cv===it.value){ tintEl(trs[i], it.kind); mark(trs[i]); break; }
+        }
+      });
     });
   }
   if(document.readyState!=='loading') apply();
@@ -215,13 +255,22 @@ function instrument(html: string, p: Payload): string {
     // sections come AFTER the datasets and have their own anchors (compmethod,
     // decodelist, MT.*, CL.*, datasets, externaldictionary); without these the
     // columns drift apart once you scroll past the last ItemGroup.
-    var as = document.querySelectorAll(
-      'a[id^="IG."],a[id^="CL."],a[id^="MT."],a[id^="AR."],a[id^="VL."],'+
-      'a[id="datasets"],a[id="compmethod"],a[id="decodelist"],a[id="externaldictionary"],a[id="comment"]'
-    );
+    // Match both id= and name= anchors. The CodeList/Controlled-Terms section
+    // emits per-codelist anchors (CL.*) and, in some stylesheets, name= rather
+    // than id= — without them this whole section has no alignment points and the
+    // two columns drift apart exactly where content differs most.
+    var sel = '[id^="IG."],[id^="CL."],[id^="MT."],[id^="AR."],[id^="VL."],[id^="CM."],'+
+      '[id="datasets"],[id="compmethod"],[id="decodelist"],[id="codelists"],'+
+      '[id="externaldictionary"],[id="comment"],[id="valuemeta"],'+
+      'a[name^="IG."],a[name^="CL."],a[name^="MT."],a[name^="CM."]';
+    var as = document.querySelectorAll(sel);
+    var seen = {};
     for(var i=0;i<as.length;i++){
+      var id = as[i].id || as[i].getAttribute('name');
+      if(!id || seen[id]) continue; // de-dupe id/name pointing at same place
+      seen[id] = 1;
       var top = as[i].getBoundingClientRect().top + (document.documentElement.scrollTop||document.body.scrollTop);
-      list.push({ id: as[i].id, top: top });
+      list.push({ id: id, top: top });
     }
     list.sort(function(x,y){ return x.top - y.top; });
     return list;
@@ -229,17 +278,26 @@ function instrument(html: string, p: Payload): string {
   var anchors = [];
   function rebuild(){ anchors = anchorEls(); }
   function curScroll(){ return document.documentElement.scrollTop||document.body.scrollTop; }
-  // Report current position as {id, offset} relative to the nearest anchor above.
+  // Report current position relative to the nearest anchor above. We send the
+  // NEXT anchor's id and a fraction of the way toward it, so the other side maps
+  // PROPORTIONALLY within the same segment — essential when a section (e.g. a
+  // CodeList with many added/removed terms) is a very different height on the
+  // two sides. A raw pixel offset would overshoot badly there. The pixel offset
+  // is kept as a fallback for the final segment (no next anchor).
   function report(){
     if(!anchors.length) rebuild();
     var y = curScroll();
-    var cur = null;
-    for(var i=0;i<anchors.length;i++){ if(anchors[i].top<=y+2) cur=anchors[i]; else break; }
-    if(cur){
-      parent.postMessage({ shtukaAnchor: cur.id, shtukaOffset: y-cur.top, side: window.name }, '*');
-    } else {
-      parent.postMessage({ shtukaTop: y, side: window.name }, '*');
+    var idx = -1;
+    for(var i=0;i<anchors.length;i++){ if(anchors[i].top<=y+2) idx=i; else break; }
+    if(idx<0){ parent.postMessage({ shtukaTop: y, side: window.name }, '*'); return; }
+    var cur = anchors[idx], next = anchors[idx+1];
+    var msg = { shtukaAnchor: cur.id, shtukaOffset: y-cur.top, side: window.name };
+    if(next){
+      var span = next.top - cur.top;
+      msg.shtukaNextId = next.id;
+      msg.shtukaFrac = span>0 ? (y-cur.top)/span : 0;
     }
+    parent.postMessage(msg, '*');
   }
   var ticking=false;
   window.addEventListener('scroll', function(){
@@ -275,9 +333,19 @@ function instrument(html: string, p: Payload): string {
     if(d.shtukaPrev){ jumpChange(-1); return; }
     if(d.shtukaAnchor){
       if(!anchors.length) rebuild();
-      var found=null;
-      for(var i=0;i<anchors.length;i++){ if(anchors[i].id===d.shtukaAnchor){ found=anchors[i]; break; } }
-      if(found){ var top=found.top + (d.shtukaOffset||0); document.documentElement.scrollTop=top; document.body.scrollTop=top; }
+      function byId(id){ for(var i=0;i<anchors.length;i++){ if(anchors[i].id===id) return anchors[i]; } return null; }
+      var cur=byId(d.shtukaAnchor);
+      if(!cur) return;
+      var top;
+      // Proportional mapping within the [cur,next] segment when both anchors
+      // exist on this side too — re-syncs at every section regardless of height.
+      var nxt = (d.shtukaNextId!=null) ? byId(d.shtukaNextId) : null;
+      if(nxt && typeof d.shtukaFrac==='number'){
+        top = cur.top + (nxt.top - cur.top) * d.shtukaFrac;
+      } else {
+        top = cur.top + (d.shtukaOffset||0);
+      }
+      document.documentElement.scrollTop=top; document.body.scrollTop=top;
     } else if(typeof d.shtukaTop==='number'){
       document.documentElement.scrollTop=d.shtukaTop; document.body.scrollTop=d.shtukaTop;
     }
@@ -330,7 +398,12 @@ export function XmlDiffView({ result }: XmlDiffViewProps) {
         syncing.current = true;
         const msg =
           d.shtukaAnchor !== undefined
-            ? { shtukaAnchor: d.shtukaAnchor, shtukaOffset: d.shtukaOffset }
+            ? {
+                shtukaAnchor: d.shtukaAnchor,
+                shtukaOffset: d.shtukaOffset,
+                shtukaNextId: d.shtukaNextId,
+                shtukaFrac: d.shtukaFrac,
+              }
             : { shtukaTop: d.shtukaTop };
         target.contentWindow.postMessage(msg, '*');
       }
@@ -386,7 +459,7 @@ export function XmlDiffView({ result }: XmlDiffViewProps) {
       if(syncing){ syncing=false; return; }
       var tgt=(d.side==='a'?fb:fa); if(!tgt||!tgt.contentWindow) return;
       syncing=true;
-      var msg = d.shtukaAnchor!==undefined ? {shtukaAnchor:d.shtukaAnchor,shtukaOffset:d.shtukaOffset} : {shtukaTop:d.shtukaTop};
+      var msg = d.shtukaAnchor!==undefined ? {shtukaAnchor:d.shtukaAnchor,shtukaOffset:d.shtukaOffset,shtukaNextId:d.shtukaNextId,shtukaFrac:d.shtukaFrac} : {shtukaTop:d.shtukaTop};
       tgt.contentWindow.postMessage(msg,'*');
     });
     function jump(dir){
