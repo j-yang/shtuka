@@ -493,9 +493,9 @@ fn summarize(res: &DiffResult) -> String {
             .iter()
             .filter(|s| s.status != "equal")
             .count();
-        let added: usize = x.sheets.iter().map(|s| s.added_rows).sum();
-        let removed: usize = x.sheets.iter().map(|s| s.removed_rows).sum();
-        let modified: usize = x.sheets.iter().map(|s| s.modified_rows).sum();
+        let added: usize = x.sheets.iter().map(|s| s.grid.added_rows).sum();
+        let removed: usize = x.sheets.iter().map(|s| s.grid.removed_rows).sum();
+        let modified: usize = x.sheets.iter().map(|s| s.grid.modified_rows).sum();
         if changed == 0 && added == 0 && removed == 0 && modified == 0 {
             return "no cell changes".to_string();
         }

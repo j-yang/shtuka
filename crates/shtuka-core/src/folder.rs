@@ -145,8 +145,8 @@ pub fn compare(path_a: &str, path_b: &str) -> io::Result<Comparison> {
     let excel_verdicts: Vec<(&str, bool)> = excel_common
         .par_iter()
         .map(|&p| {
-            let fa = crate::excel::content_fingerprint(a_set[p].abs.to_string_lossy().as_ref());
-            let fb = crate::excel::content_fingerprint(b_set[p].abs.to_string_lossy().as_ref());
+            let fa = mumford::excel::content_fingerprint(a_set[p].abs.to_string_lossy().as_ref());
+            let fb = mumford::excel::content_fingerprint(b_set[p].abs.to_string_lossy().as_ref());
             let same = match (fa, fb) {
                 (Some(ha), Some(hb)) => ha == hb,
                 // Unparseable on a side: fall back to raw-byte equality.

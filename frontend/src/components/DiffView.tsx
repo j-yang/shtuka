@@ -193,22 +193,22 @@ function TextDiffPane({
       if (op.type === 'equal') {
         aLine++;
         bLine++;
-        left.push({ num: aLine, text: op.aVal || '', type: 'equal' });
-        right.push({ num: bLine, text: op.bVal || '', type: 'equal' });
+        left.push({ num: aLine, text: op.old || '', type: 'equal' });
+        right.push({ num: bLine, text: op.new || '', type: 'equal' });
       } else if (op.type === 'delete') {
         aLine++;
-        left.push({ num: aLine, text: op.aVal || '', type: 'delete' });
+        left.push({ num: aLine, text: op.old || '', type: 'delete' });
         right.push({ num: 0, text: '', type: 'empty' });
       } else if (op.type === 'insert') {
         bLine++;
         left.push({ num: 0, text: '', type: 'empty' });
-        right.push({ num: bLine, text: op.bVal || '', type: 'insert' });
+        right.push({ num: bLine, text: op.new || '', type: 'insert' });
       } else if (op.type === 'replace') {
         // Modified-in-place: same row, both sides shown, only changed spans lit.
         aLine++;
         bLine++;
-        left.push({ num: aLine, text: op.aVal || '', type: 'replace', segs: op.aSegs });
-        right.push({ num: bLine, text: op.bVal || '', type: 'replace', segs: op.bSegs });
+        left.push({ num: aLine, text: op.old || '', type: 'replace', segs: op.old_segs });
+        right.push({ num: bLine, text: op.new || '', type: 'replace', segs: op.new_segs });
       }
     }
     return { leftLines: left, rightLines: right };

@@ -35,11 +35,11 @@ export interface DiffOp {
   type: OpType;
   a: number;
   b: number;
-  aVal?: string;
-  bVal?: string;
+  old?: string;
+  new?: string;
   // Inline char/word segments for 'replace' rows (modified-in-place lines).
-  aSegs?: InlineSeg[];
-  bSegs?: InlineSeg[];
+  old_segs?: InlineSeg[];
+  new_segs?: InlineSeg[];
 }
 
 export interface TextSummary {

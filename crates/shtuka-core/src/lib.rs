@@ -1,23 +1,30 @@
-//! shtuka-core: the format-aware diff engine. Pure Rust, no GUI dependencies, so
-//! it can be unit-tested headless. The Tauri binary (src-tauri) wraps these.
+//! shtuka-core: clinical trial document diff — CDISC adapter + app features.
+//!
+//! Built on top of [`tate`] (diff algorithms) and [`mumford`] (format engines).
+//! This crate adds:
+//! - CDISC define.xml tree diff with ODM-specific semantics (domain, variable,
+//!   codelist, value-level mapping)
+//! - Folder comparison with content-aware Excel fingerprinting
+//! - Version history / changelog with snapshot management
+//! - A unified [`dispatch`] that routes by extension to mumford engines or the
+//!   CDISC XML adapter
 
-pub mod docx;
-pub mod excel;
-pub mod folder;
-pub mod myers;
-pub mod pdf;
-pub mod rtf;
-pub mod text;
-pub mod track;
 pub mod xml;
+pub mod folder;
+pub mod track;
 
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-pub use docx::DocxResult;
-pub use excel::ExcelResult;
-pub use folder::Comparison;
-pub use text::TextResult;
+// Re-export mumford's format types so the Tauri layer and frontend can use them
+// through shtuka_core without a separate mumford dependency.
+pub use mumford::text::TextResult;
+pub use mumford::excel::ExcelResult;
+pub use mumford::docx::DocxResult;
+pub use mumford::rtf::RtfResult;
+pub use mumford::pdf;
+pub use mumford::folder::Comparison;
+
 pub use track::{Snapshot, SnapshotResult, Track, TrackSummary};
 
 /// Lowercase hex encoding, shared by the folder and track hashers.
@@ -31,8 +38,8 @@ pub fn folder_hex(bytes: &[u8]) -> String {
     s
 }
 
-/// DiffResult is the unified result the frontend consumes. Exactly one of the
-/// `text` / `excel` / `docx` fields is set, mirroring internal/diff/factory.go.
+/// The unified diff result the frontend consumes. Exactly one of the
+/// format-specific fields is set.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct DiffResult {
     #[serde(rename = "fileType")]
@@ -48,15 +55,17 @@ pub struct DiffResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub docx: Option<DocxResult>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub rtf: Option<rtf::RtfResult>,
+    pub rtf: Option<RtfResult>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub xml: Option<xml::XmlResult>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub error: String,
 }
 
-/// dispatch routes a file pair to the right diff engine by extension, mirroring
-/// the Go factory. An empty path on one side means the file is absent there.
+/// Dispatch routes a file pair to the right diff engine by extension.
+/// Delegates to mumford for all formats except XML (which goes through the
+/// CDISC define.xml adapter). An empty path on one side means the file is
+/// absent there.
 pub fn dispatch(path_a: &str, path_b: &str) -> Result<DiffResult, String> {
     let ext = ext_of(path_a).or_else(|| ext_of(path_b)).unwrap_or_default();
 
@@ -68,12 +77,12 @@ pub fn dispatch(path_a: &str, path_b: &str) -> Result<DiffResult, String> {
 
     match ext.as_str() {
         "xlsx" | "xls" | "xlsm" => {
-            let r = excel::excel_diff(path_a, path_b)?;
+            let r = mumford::excel::excel_diff(path_a, path_b)?;
             res.file_type = "excel".into();
             res.excel = Some(r);
         }
         "docx" => {
-            let r = docx::docx_diff(path_a, path_b)?;
+            let r = mumford::docx::docx_diff(path_a, path_b)?;
             res.file_type = "docx".into();
             res.docx = Some(r);
         }
@@ -81,13 +90,12 @@ pub fn dispatch(path_a: &str, path_b: &str) -> Result<DiffResult, String> {
             return Err("legacy .doc format not supported (please convert to .docx)".into());
         }
         "rtf" => {
-            // SAS RTF outputs are styled tables; render side-by-side as HTML.
-            let r = rtf::rtf_diff(path_a, path_b)?;
+            let r = mumford::rtf::rtf_diff(path_a, path_b)?;
             res.file_type = "rtf".into();
             res.rtf = Some(r);
         }
         "pdf" => {
-            let r = pdf::pdf_diff(path_a, path_b)?;
+            let r = mumford::pdf::pdf_diff(path_a, path_b)?;
             res.file_type = "text".into();
             res.text = Some(r);
         }
@@ -97,7 +105,7 @@ pub fn dispatch(path_a: &str, path_b: &str) -> Result<DiffResult, String> {
             res.xml = Some(r);
         }
         _ => {
-            let r = text::text_diff(path_a, path_b).map_err(|e| e.to_string())?;
+            let r = mumford::text::text_diff(path_a, path_b).map_err(|e| e.to_string())?;
             res.file_type = "text".into();
             res.text = Some(r);
         }
