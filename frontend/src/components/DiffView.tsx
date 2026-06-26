@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
-import { DiffResult, TextResult, DocxResult, TrackContext } from '../types';
+import { DiffResult, TextResult, DocxResult, PptxResult, TrackContext } from '../types';
 import { DiffFiles } from '../../wailsjs/go/main/App';
 import { ExcelDiffPane } from './ExcelDiffPane';
 import { PdfPagesView } from './PdfPagesView';
@@ -152,6 +152,7 @@ export function DiffView({ pathA, pathB, label, onClose, fetcher, fetchKey, trac
                 {result.text && <TextDiffPane result={result.text} leftRef={leftRef} rightRef={rightRef} onScroll={handleScroll} />}
                 {result.excel && <ExcelDiffPane result={result.excel} trackContext={trackContext} />}
                 {result.docx && <DocxDiffPane result={result.docx} />}
+                {result.pptx && <PptxDiffPane result={result.pptx} />}
               </>
             )}
           </>
@@ -401,6 +402,67 @@ function DocxDiffPane({ result }: { result: DocxResult }) {
         result.deletedParagraphs.length === 0 && (
           <div className="text-gray-400 italic text-sm">No paragraph changes detected</div>
         )}
+    </div>
+  );
+}
+
+function PptxDiffPane({ result }: { result: PptxResult }) {
+  const changed = result.added + result.modified + result.removed;
+  return (
+    <div className="flex-1 overflow-auto p-4">
+      <div className="mb-4 text-xs text-gray-500 flex gap-4">
+        <span>{result.added} slide(s) added</span>
+        <span className="text-amber-700">{result.modified} modified</span>
+        <span className="text-red-700">{result.removed} removed</span>
+      </div>
+
+      {changed === 0 && (
+        <div className="text-gray-400 italic text-sm">No slide changes detected</div>
+      )}
+
+      {result.slides.filter(s => s.status === 'modified').map((s, i) => (
+        <div key={`m-${i}`} className="mb-4 border-l-2 border-amber-400 pl-3">
+          <div className="text-[10px] text-gray-400 mb-1">
+            Slide {s.slideA} → {s.slideB} (modified)
+          </div>
+          {s.ops?.filter(op => op.type !== 'equal').slice(0, 20).map((op, j) => (
+            <div key={j} className="mb-1">
+              {op.type === 'delete' && (
+                <div className="font-mono text-xs bg-red-50 px-2 py-0.5 line-through text-red-900">
+                  {op.old}
+                </div>
+              )}
+              {op.type === 'insert' && (
+                <div className="font-mono text-xs bg-green-50 px-2 py-0.5 text-green-900">
+                  {op.new}
+                </div>
+              )}
+              {op.type === 'replace' && (
+                <>
+                  <div className="font-mono text-xs bg-red-50 px-2 py-0.5 line-through text-red-900">
+                    {op.old}
+                  </div>
+                  <div className="font-mono text-xs bg-green-50 px-2 py-0.5 text-green-900">
+                    {op.new}
+                  </div>
+                </>
+              )}
+            </div>
+          ))}
+        </div>
+      ))}
+
+      {result.slides.filter(s => s.status === 'added').map((s, i) => (
+        <div key={`a-${i}`} className="mb-2 border-l-2 border-green-400 pl-3">
+          <div className="text-[10px] text-gray-400 mb-1">Slide {s.slideB} (added)</div>
+        </div>
+      ))}
+
+      {result.slides.filter(s => s.status === 'removed').map((s, i) => (
+        <div key={`r-${i}`} className="mb-2 border-l-2 border-red-400 pl-3">
+          <div className="text-[10px] text-gray-400 mb-1">Slide {s.slideA} (removed)</div>
+        </div>
+      ))}
     </div>
   );
 }

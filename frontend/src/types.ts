@@ -130,8 +130,28 @@ export interface DiffResult {
   excel?: ExcelResult;
   docx?: DocxResult;
   rtf?: RtfResult;
+  pptx?: PptxResult;
   xml?: XmlResult;
   error?: string;
+}
+
+// --- PPTX (PowerPoint slide diff) -------------------------------------------
+
+export interface SlideDiff {
+  status: 'equal' | 'modified' | 'added' | 'removed';
+  slideA: number;
+  slideB: number;
+  ops?: DiffOp[];
+}
+
+export interface PptxResult {
+  fileType: 'pptx';
+  pathA: string;
+  pathB: string;
+  slides: SlideDiff[];
+  added: number;
+  modified: number;
+  removed: number;
 }
 
 // --- XML (define.xml, XSLT-rendered side-by-side) --------------------------

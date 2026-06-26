@@ -22,6 +22,7 @@ pub use mumford::text::TextResult;
 pub use mumford::excel::ExcelResult;
 pub use mumford::docx::DocxResult;
 pub use mumford::rtf::RtfResult;
+pub use mumford::pptx::PptxResult;
 pub use mumford::pdf;
 pub use mumford::folder::Comparison;
 
@@ -56,6 +57,8 @@ pub struct DiffResult {
     pub docx: Option<DocxResult>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rtf: Option<RtfResult>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pptx: Option<PptxResult>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub xml: Option<xml::XmlResult>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -93,6 +96,11 @@ pub fn dispatch(path_a: &str, path_b: &str) -> Result<DiffResult, String> {
             let r = mumford::rtf::rtf_diff(path_a, path_b)?;
             res.file_type = "rtf".into();
             res.rtf = Some(r);
+        }
+        "pptx" => {
+            let r = mumford::pptx::pptx_diff(path_a, path_b)?;
+            res.file_type = "pptx".into();
+            res.pptx = Some(r);
         }
         "pdf" => {
             let r = mumford::pdf::pdf_diff(path_a, path_b)?;
