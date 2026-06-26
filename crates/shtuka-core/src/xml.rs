@@ -5,8 +5,9 @@
 //! two documents side by side, and diffs the rendered text line-by-line.
 
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
+use tate::tree::{tree_diff as tate_tree_diff, AttrChange, ChangeKind, TreeNode};
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct XmlResult {
@@ -136,7 +137,180 @@ pub fn xml_diff(path_a: &str, path_b: &str) -> Result<XmlResult, String> {
     Ok(res)
 }
 
-// --- recursive tree diff ---------------------------------------------------
+// --- tree diff via tate -----------------------------------------------------
+
+/// tree_diff parses both documents, converts them to tate's format-agnostic
+/// [`TreeNode`] representation, runs [`tate::tree::tree_diff`], then enriches
+/// each structural change with CDISC-specific fields (column mapping, codelist
+/// term diffs, OID parsing).
+fn tree_diff(xml_a: &str, xml_b: &str) -> Result<Vec<XmlChange>, String> {
+    let da = roxmltree::Document::parse(xml_a).map_err(|e| format!("parse A: {e}"))?;
+    let db = roxmltree::Document::parse(xml_b).map_err(|e| format!("parse B: {e}"))?;
+
+    // OID → original roxmltree node, so CDISC enrichment (which needs to inspect
+    // child element signatures) can look nodes up by identity after tate returns.
+    let mut a_map: HashMap<String, roxmltree::Node> = HashMap::new();
+    let mut b_map: HashMap<String, roxmltree::Node> = HashMap::new();
+    let ta = convert_node(da.root_element(), &mut a_map);
+    let tb = convert_node(db.root_element(), &mut b_map);
+
+    let diff = tate_tree_diff(&ta, &tb);
+
+    let mut out = Vec::new();
+    for tc in &diff.changes {
+        let kind_str = match tc.kind {
+            ChangeKind::Added => "added",
+            ChangeKind::Removed => "removed",
+            ChangeKind::Modified => "modified",
+        };
+        let elem_type = tc.elem_type.clone();
+        let oid = tc.id.clone();
+        let idp = id_prefix(&elem_type).to_string();
+
+        let changed_attrs: Vec<String> = tc.changed_attrs.iter().map(format_attr_change).collect();
+        let changed_keys: Vec<String> = changed_attrs
+            .iter()
+            .filter_map(|s| s.split(':').next().map(|k| k.trim().to_string()))
+            .filter(|k| !k.is_empty() && k != "(text changed)")
+            .collect();
+
+        // tate reports Added/Modified from the B side, Removed from the A side —
+        // mirror that to fetch the Name attribute used for ItemDef var_name.
+        let primary = match tc.kind {
+            ChangeKind::Removed => a_map.get(&oid).copied(),
+            _ => b_map.get(&oid).copied(),
+        };
+        let name = primary
+            .and_then(|n| n.attribute("Name").map(|s| s.to_string()))
+            .unwrap_or_default();
+
+        let (domain, var_name, value_level, parent_oid, where_var, where_val) =
+            parse_itemdef_oid(&elem_type, &oid, &name);
+
+        // CDISC-specific enrichment for Modified nodes: map the change to exact
+        // rendered columns (ItemDef) or changed terms (CodeList) so the UI tints
+        // precisely rather than lighting the whole row/list. These need both the
+        // A and B roxmltree nodes, looked up by OID.
+        let mut cols = Vec::new();
+        let mut items = Vec::new();
+        let mut caption_changed = false;
+        if tc.kind == ChangeKind::Modified {
+            if elem_type == "ItemDef" {
+                if let (Some(a), Some(b)) = (a_map.get(&oid).copied(), b_map.get(&oid).copied()) {
+                    cols = item_def_columns(a, b);
+                }
+            } else if elem_type == "CodeList" {
+                if let (Some(a), Some(b)) = (a_map.get(&oid).copied(), b_map.get(&oid).copied()) {
+                    let (it, cap) = codelist_changes(a, b);
+                    items = it;
+                    caption_changed = cap;
+                }
+            }
+        }
+
+        // A Modified node with no attribute changes still changed somehow (text
+        // or a non-locatable descendant). Surface a marker so the UI has something
+        // to show; the bare key list excludes it.
+        let mut changed_attrs = changed_attrs;
+        if tc.kind == ChangeKind::Modified && changed_attrs.is_empty() {
+            let text_changed = match (a_map.get(&oid).copied(), b_map.get(&oid).copied()) {
+                (Some(a), Some(b)) => direct_text(a) != direct_text(b),
+                _ => false,
+            };
+            changed_attrs.push(
+                if text_changed { "(text changed)" } else { "(items changed)" }.to_string(),
+            );
+        }
+
+        out.push(XmlChange {
+            kind: kind_str.to_string(),
+            elem_type,
+            oid,
+            label: tc.label.clone(),
+            id_prefix: idp,
+            domain,
+            var_name,
+            changed_attrs,
+            changed_keys,
+            cols,
+            items,
+            caption_changed,
+            value_level,
+            parent_oid,
+            where_var,
+            where_val,
+        });
+    }
+
+    Ok(out)
+}
+
+/// Convert a roxmltree element into a format-agnostic [`TreeNode`].
+///
+/// Identity is set from `OID` (or `Name` when absent) — exactly the attributes
+/// that give a node a rendered anchor, so tate's "identity = locatable" rule
+/// matches CDISC's notion of a listable node. Other key-like attributes
+/// (CodedValue, ItemOID, …) are intentionally left unset: those elements stay
+/// positional in tate and bubble up to their nearest OID/Name ancestor, which is
+/// what gets enriched (e.g. a CodeList surfaces when its terms change). Every
+/// locatable node is also recorded in `map` for later CDISC enrichment.
+fn convert_node<'a, 'input: 'a>(
+    n: roxmltree::Node<'a, 'input>,
+    map: &mut HashMap<String, roxmltree::Node<'a, 'input>>,
+) -> TreeNode {
+    let tag = n.tag_name().name().to_string();
+    let oid = n.attribute("OID").map(|s| s.to_string());
+    let name = n.attribute("Name").unwrap_or("");
+    let identity = oid.clone().or_else(|| {
+        if !name.is_empty() {
+            Some(name.to_string())
+        } else {
+            None
+        }
+    });
+    let label = if !name.is_empty() {
+        name.to_string()
+    } else {
+        identity.clone().unwrap_or_default()
+    };
+
+    if let Some(id) = &identity {
+        map.insert(id.clone(), n);
+    }
+
+    let attributes: Vec<(String, String)> = n
+        .attributes()
+        .map(|a| (a.name().to_string(), a.value().to_string()))
+        .collect();
+    let text = direct_text(n);
+    let children: Vec<TreeNode> = n
+        .children()
+        .filter(|c| c.is_element())
+        .map(|c| convert_node(c, map))
+        .collect();
+
+    TreeNode {
+        kind: tag,
+        identity,
+        label,
+        attributes,
+        text,
+        children,
+    }
+}
+
+/// Format a tate [`AttrChange`] as "name: old → new" (with `(added)`/`(removed)`
+/// markers for attributes present on only one side), matching the prior
+/// roxmltree-based attr_diffs output.
+fn format_attr_change(c: &AttrChange) -> String {
+    if c.old.is_empty() && !c.new.is_empty() {
+        format!("{}: (added) → {}", c.name, c.new)
+    } else if !c.old.is_empty() && c.new.is_empty() {
+        format!("{}: {} → (removed)", c.name, c.old)
+    } else {
+        format!("{}: {} → {}", c.name, c.old, c.new)
+    }
+}
 
 /// HTML anchor-id prefix the define.xml stylesheet emits per element type.
 fn id_prefix(elem_type: &str) -> &'static str {
@@ -149,49 +323,17 @@ fn id_prefix(elem_type: &str) -> &'static str {
     }
 }
 
-/// tree_diff parses both documents and walks them in parallel, matching child
-/// elements by key (OID > Name > tag@position) and recording every node that is
-/// added/removed, or whose attributes/text changed.
-fn tree_diff(xml_a: &str, xml_b: &str) -> Result<Vec<XmlChange>, String> {
-    let da = roxmltree::Document::parse(xml_a).map_err(|e| format!("parse A: {e}"))?;
-    let db = roxmltree::Document::parse(xml_b).map_err(|e| format!("parse B: {e}"))?;
-    let mut changes = Vec::new();
-    diff_node(da.root_element(), db.root_element(), &mut changes);
-    Ok(changes)
-}
-
-/// A stable key for matching a node among its siblings. Many ODM elements have
-/// no OID/Name — their identity is another attribute: CodeList items key on
-/// CodedValue, ItemRefs on ItemOID, etc. Without this, reordered/added codelist
-/// terms would be paired positionally and report as all-changed.
-fn node_key(n: roxmltree::Node) -> String {
-    let tag = n.tag_name().name();
-    // Identity attributes in priority order; first present wins.
-    for attr in ["OID", "Name", "CodedValue", "ItemOID", "MethodOID", "leafID", "Context"] {
-        if let Some(v) = n.attribute(attr) {
-            return format!("{tag}#{v}");
-        }
-    }
-    // No identity attr: key by tag only; positional pairing handles order.
-    tag.to_string()
-}
-
-fn local_tag<'a>(n: roxmltree::Node<'a, 'a>) -> &'a str {
-    n.tag_name().name()
-}
-
-/// Build a change record for a node (added/removed), pulling location hints.
-fn mk_change(kind: &str, n: roxmltree::Node, changed_attrs: Vec<String>) -> XmlChange {
-    let elem_type = local_tag(n).to_string();
-    let oid = n.attribute("OID").unwrap_or("").to_string();
-    let name = n.attribute("Name").unwrap_or("").to_string();
-    let label = if !name.is_empty() { name.clone() } else { oid.clone() };
-
-    // ItemDef OID conventions:
-    //   regular:      IT.<DOMAIN>.<VAR>                              (3 segments)
-    //   value-level:  IT.<DOMAIN>.<VAR>.<WDOM>.<WVAR>.<COMP>.<VAL>   (>3 segments)
-    // The value-level rows render in a collapsible VLM sub-table keyed by the
-    // parent variable's OID, matched on the where-clause text "<WVAR> = <VAL>".
+/// Parse an ItemDef OID into the location hints the UI needs.
+///
+/// Regular:      `IT.<DOMAIN>.<VAR>`                              (3 segments)
+/// Value-level:  `IT.<DOMAIN>.<VAR>.<WDOM>.<WVAR>.<COMP>.<VAL>`   (>3 segments)
+/// The value-level rows render in a collapsible VLM sub-table keyed by the
+/// parent variable's OID, matched on the where-clause text "<WVAR> = <VAL>".
+fn parse_itemdef_oid(
+    elem_type: &str,
+    oid: &str,
+    name: &str,
+) -> (String, String, bool, String, String, String) {
     let mut domain = String::new();
     let mut var_name = String::new();
     let mut value_level = false;
@@ -213,37 +355,15 @@ fn mk_change(kind: &str, n: roxmltree::Node, changed_attrs: Vec<String>) -> XmlC
             if let Some(last) = parts.last() {
                 where_val = (*last).to_string();
             }
-            var_name = name.clone();
+            var_name = name.to_string();
         } else {
-            var_name = name.clone();
+            var_name = name.to_string();
         }
     }
-
-    // Bare attribute names from "Name: old → new" entries, for column mapping.
-    let changed_keys: Vec<String> = changed_attrs
-        .iter()
-        .filter_map(|s| s.split(':').next().map(|k| k.trim().to_string()))
-        .filter(|k| !k.is_empty() && k != "(text changed)")
-        .collect();
-    XmlChange {
-        kind: kind.into(),
-        elem_type,
-        oid,
-        label,
-        id_prefix: id_prefix(local_tag(n)).to_string(),
-        domain,
-        var_name,
-        changed_attrs,
-        changed_keys,
-        cols: Vec::new(),
-        items: Vec::new(),
-        caption_changed: false,
-        value_level,
-        parent_oid,
-        where_var,
-        where_val,
-    }
+    (domain, var_name, value_level, parent_oid, where_var, where_val)
 }
+
+// --- CDISC enrichment (roxmltree-based) -------------------------------------
 
 /// Canonical signature of an element subtree (tag + sorted attrs + text +
 /// children, recursively). Two structurally identical subtrees produce the same
@@ -352,119 +472,6 @@ fn codelist_changes(a: roxmltree::Node, b: roxmltree::Node) -> (Vec<ItemChg>, bo
     (items, caption_changed)
 }
 
-/// Compare two matched element nodes: their attributes, then their children.
-fn diff_node(a: roxmltree::Node, b: roxmltree::Node, out: &mut Vec<XmlChange>) {
-    diff_node_inner(a, b, out);
-}
-
-/// Returns true if anything in this subtree (this node or a descendant) changed.
-/// A change in a keyless descendant (e.g. a CodeList's EnumeratedItem) bubbles up
-/// to the nearest identity-bearing ancestor, which is what gets reported.
-fn diff_node_inner(a: roxmltree::Node, b: roxmltree::Node, out: &mut Vec<XmlChange>) -> bool {
-    // Locatable = OID/Name (has a rendered anchor, can appear in the list).
-    // Keyed-but-not-locatable children (CodedValue/ItemOID) only bubble up.
-    let locatable = node_is_locatable(b);
-
-    // This node's own attribute/text changes.
-    let attr_changes = attr_diffs(a, b);
-    let text_changed = direct_text(a) != direct_text(b);
-    let mut own_changed = !attr_changes.is_empty() || text_changed;
-
-    // Recurse into children, matching by key.
-    let a_children: Vec<roxmltree::Node> = a.children().filter(|c| c.is_element()).collect();
-    let b_children: Vec<roxmltree::Node> = b.children().filter(|c| c.is_element()).collect();
-    let mut a_by_key: BTreeMap<String, Vec<roxmltree::Node>> = BTreeMap::new();
-    for c in &a_children {
-        a_by_key.entry(node_key(*c)).or_default().push(*c);
-    }
-    let mut a_used: BTreeMap<String, usize> = BTreeMap::new();
-    let mut descendant_changed = false;
-
-    for &bc in &b_children {
-        let key = node_key(bc);
-        let idx = a_used.entry(key.clone()).or_insert(0);
-        let matched = a_by_key.get(&key).and_then(|v| v.get(*idx)).copied();
-        match matched {
-            Some(ac) => {
-                *idx += 1;
-                let child_changed = diff_node_inner(ac, bc, out);
-                // A changed child that isn't itself locatable surfaces via us.
-                if child_changed && !node_is_locatable(bc) {
-                    descendant_changed = true;
-                }
-            }
-            None => {
-                if emit_subtree("added", bc, out) {
-                    // added child reported itself; but a keyless added child
-                    // (e.g. a new EnumeratedItem) is only visible via this node.
-                } else {
-                    descendant_changed = true;
-                }
-            }
-        }
-    }
-    for (key, nodes) in &a_by_key {
-        let used = a_used.get(key).copied().unwrap_or(0);
-        for &ac in nodes.iter().skip(used) {
-            if !emit_subtree("removed", ac, out) {
-                descendant_changed = true;
-            }
-        }
-    }
-
-    // Report THIS node only if it's locatable (OID/Name) and something changed —
-    // its own attrs, or a non-locatable descendant (so a CodeList surfaces when
-    // its terms change, but the individual EnumeratedItems don't clutter the list).
-    if locatable && (own_changed || descendant_changed) {
-        let mut ch = mk_change("modified", b, attr_changes);
-        let tag = local_tag(b);
-        // Map the change to specific rendered columns / term rows so the UI can
-        // tint precisely rather than lighting the whole row or whole codelist.
-        match tag {
-            "ItemDef" => {
-                ch.cols = item_def_columns(a, b);
-            }
-            "CodeList" => {
-                let (items, caption) = codelist_changes(a, b);
-                ch.items = items;
-                ch.caption_changed = caption;
-            }
-            _ => {}
-        }
-        if ch.changed_attrs.is_empty() {
-            ch.changed_attrs.push(if own_changed { "(text changed)".into() } else { "(items changed)".into() });
-        }
-        out.push(ch);
-        own_changed = true;
-    }
-
-    own_changed || descendant_changed
-}
-
-/// Locatable = has a rendered anchor (OID/Name). These can appear in the change
-/// list and be highlighted; keyed-only nodes (CodedValue/ItemOID) cannot.
-fn node_is_locatable(n: roxmltree::Node) -> bool {
-    n.attribute("OID").is_some() || n.attribute("Name").is_some()
-}
-
-/// Emit a change for an added/removed node and its identity-bearing descendants.
-/// Returns true if at least one OID/Name-bearing node was reported (so the caller
-/// knows whether the change is independently locatable, or must bubble up).
-fn emit_subtree(kind: &str, n: roxmltree::Node, out: &mut Vec<XmlChange>) -> bool {
-    let mut reported = false;
-    // Only OID/Name nodes are independently locatable in the rendered page.
-    if n.attribute("OID").is_some() || n.attribute("Name").is_some() {
-        out.push(mk_change(kind, n, Vec::new()));
-        reported = true;
-    }
-    for c in n.children().filter(|c| c.is_element()) {
-        if emit_subtree(kind, c, out) {
-            reported = true;
-        }
-    }
-    reported
-}
-
 /// direct_text = concatenation of this node's immediate text children (trimmed).
 fn direct_text(n: roxmltree::Node) -> String {
     let mut s = String::new();
@@ -474,26 +481,6 @@ fn direct_text(n: roxmltree::Node) -> String {
         }
     }
     s.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-/// attr_diffs lists attributes that differ as "name: old → new".
-fn attr_diffs(a: roxmltree::Node, b: roxmltree::Node) -> Vec<String> {
-    let am: BTreeMap<&str, &str> = a.attributes().map(|x| (x.name(), x.value())).collect();
-    let bm: BTreeMap<&str, &str> = b.attributes().map(|x| (x.name(), x.value())).collect();
-    let mut out = Vec::new();
-    for (k, bv) in &bm {
-        match am.get(k) {
-            Some(av) if av == bv => {}
-            Some(av) => out.push(format!("{k}: {av} → {bv}")),
-            None => out.push(format!("{k}: (added) → {bv}")),
-        }
-    }
-    for (k, av) in &am {
-        if !bm.contains_key(k) {
-            out.push(format!("{k}: {av} → (removed)"));
-        }
-    }
-    out
 }
 
 /// load_side reads one XML file and the stylesheet it references (same dir).
