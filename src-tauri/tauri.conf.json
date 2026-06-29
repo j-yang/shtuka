@@ -33,7 +33,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDI2NDJERkY2MDMxMzg3MzUKUldRMWh4TUQ5dDlDSnNDVm01Ym04SnVsWkU2WlpoSWlSMFVPci9sWE5YSk94OU4xeXpwSzF6cUEK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEI3QzM3QTJGNDlCQTE1ODEKUldTQkZicEpMM3JEdHdPcHNWbjhNNTR2WURpQitJTE1ZbjQvVG1TeVNOaFJPU1JpTDhoZnIwSkgK",
       "endpoints": [
         "https://github.com/azu-oncology-rd/shtuka/releases/latest/download/latest.json"
       ]
