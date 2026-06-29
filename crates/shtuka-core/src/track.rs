@@ -170,7 +170,7 @@ pub fn list_tracks(root: &str) -> io::Result<Vec<TrackSummary>> {
             last_source_path: track.last_source_path.clone(),
         });
     }
-    out.sort_by(|a, b| b.last_snapshot_at.cmp(&a.last_snapshot_at));
+    out.sort_by_key(|b| std::cmp::Reverse(b.last_snapshot_at));
     Ok(out)
 }
 
@@ -397,7 +397,13 @@ fn extract_var_row(path: &str, sheet: &str, var_name: &str) -> (Vec<String>, Opt
                 }
             }
             Data::Int(i) => i.to_string(),
-            Data::Bool(b) => if *b { "TRUE".into() } else { "FALSE".into() },
+            Data::Bool(b) => {
+                if *b {
+                    "TRUE".into()
+                } else {
+                    "FALSE".into()
+                }
+            }
             Data::DateTime(dt) => format!("{}", dt.as_f64()),
             Data::DateTimeIso(s) | Data::DurationIso(s) => s.clone(),
             Data::Error(e) => format!("{e:?}"),
@@ -410,17 +416,14 @@ fn extract_var_row(path: &str, sheet: &str, var_name: &str) -> (Vec<String>, Opt
     let Ok(range) = wb.worksheet_range(sheet) else {
         return (Vec::new(), None);
     };
-    let grid: Vec<Vec<String>> = range
-        .rows()
-        .map(|r| r.iter().map(to_s).collect())
-        .collect();
+    let grid: Vec<Vec<String>> = range.rows().map(|r| r.iter().map(to_s).collect()).collect();
 
     // Header row = the first row that fills most of the width (mirrors the Excel
     // diff's detector); SDTM specs put it after the metadata block.
     let width = grid.iter().map(|r| r.len()).max().unwrap_or(0);
     let header_idx = grid.iter().position(|r| {
         let filled = r.iter().filter(|c| !c.trim().is_empty()).count();
-        width >= 2 && filled >= (width * 8 + 9) / 10
+        width >= 2 && filled >= (width * 8).div_ceil(10)
     });
     let headers = header_idx.map(|i| grid[i].clone()).unwrap_or_default();
     let start = header_idx.map(|i| i + 1).unwrap_or(0);
@@ -488,11 +491,7 @@ fn summarize_pair(path_a: &str, path_b: &str) -> String {
 
 fn summarize(res: &DiffResult) -> String {
     if let Some(x) = &res.excel {
-        let changed = x
-            .sheets
-            .iter()
-            .filter(|s| s.status != "equal")
-            .count();
+        let changed = x.sheets.iter().filter(|s| s.status != "equal").count();
         let added: usize = x.sheets.iter().map(|s| s.grid.added_rows).sum();
         let removed: usize = x.sheets.iter().map(|s| s.grid.removed_rows).sum();
         let modified: usize = x.sheets.iter().map(|s| s.grid.modified_rows).sum();

@@ -54,7 +54,11 @@ pub struct XmlChange {
     /// For ItemDef: the variable name (row label within the group block).
     #[serde(rename = "varName", default, skip_serializing_if = "String::is_empty")]
     pub var_name: String,
-    #[serde(rename = "changedAttrs", default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        rename = "changedAttrs",
+        default,
+        skip_serializing_if = "Vec::is_empty"
+    )]
     pub changed_attrs: Vec<String>,
     /// Bare names of changed attributes (e.g. ["Length","SignificantDigits"]) so
     /// the UI can map them to table columns and tint only those cells.
@@ -80,7 +84,11 @@ pub struct XmlChange {
     pub value_level: bool,
     /// For value-level changes: the parent variable's ItemDef OID (IT.EG.EGORRES),
     /// used to find the VLM container rows (whose class carries it).
-    #[serde(rename = "parentOid", default, skip_serializing_if = "String::is_empty")]
+    #[serde(
+        rename = "parentOid",
+        default,
+        skip_serializing_if = "String::is_empty"
+    )]
     pub parent_oid: String,
     /// For value-level changes: the where-clause variable + value (EGTESTCD, EGALL)
     /// parsed from the OID, to match the specific VLM row by its rendered text.
@@ -218,7 +226,12 @@ fn tree_diff(xml_a: &str, xml_b: &str) -> Result<Vec<XmlChange>, String> {
                 _ => false,
             };
             changed_attrs.push(
-                if text_changed { "(text changed)" } else { "(items changed)" }.to_string(),
+                if text_changed {
+                    "(text changed)"
+                } else {
+                    "(items changed)"
+                }
+                .to_string(),
             );
         }
 
@@ -360,7 +373,14 @@ fn parse_itemdef_oid(
             var_name = name.to_string();
         }
     }
-    (domain, var_name, value_level, parent_oid, where_var, where_val)
+    (
+        domain,
+        var_name,
+        value_level,
+        parent_oid,
+        where_var,
+        where_val,
+    )
 }
 
 // --- CDISC enrichment (roxmltree-based) -------------------------------------
@@ -456,17 +476,26 @@ fn codelist_changes(a: roxmltree::Node, b: roxmltree::Node) -> (Vec<ItemChg>, bo
     let mut items = Vec::new();
     for (k, bn) in &bm {
         match am.get(k) {
-            None => items.push(ItemChg { value: k.clone(), kind: "added".into() }),
+            None => items.push(ItemChg {
+                value: k.clone(),
+                kind: "added".into(),
+            }),
             Some(an) => {
                 if subtree_sig(*an) != subtree_sig(*bn) {
-                    items.push(ItemChg { value: k.clone(), kind: "modified".into() });
+                    items.push(ItemChg {
+                        value: k.clone(),
+                        kind: "modified".into(),
+                    });
                 }
             }
         }
     }
     for k in am.keys() {
         if !bm.contains_key(k) {
-            items.push(ItemChg { value: k.clone(), kind: "removed".into() });
+            items.push(ItemChg {
+                value: k.clone(),
+                kind: "removed".into(),
+            });
         }
     }
     (items, caption_changed)
@@ -490,7 +519,11 @@ fn load_side(path: &str) -> Result<(String, String, Option<String>), String> {
     let xml = String::from_utf8_lossy(&bytes).into_owned();
 
     let Some(href) = stylesheet_href(&xml) else {
-        return Ok((xml, String::new(), Some("no xml-stylesheet reference".into())));
+        return Ok((
+            xml,
+            String::new(),
+            Some("no xml-stylesheet reference".into()),
+        ));
     };
     let dir = Path::new(path).parent().unwrap_or_else(|| Path::new("."));
     let xsl_path = dir.join(&href);
@@ -587,12 +620,18 @@ mod tests {
         assert_eq!(c.len(), 1);
         assert_eq!(c[0].elem_type, "CodeList");
         assert!(!c[0].caption_changed);
-        let mut got: Vec<(String, String)> =
-            c[0].items.iter().map(|i| (i.value.clone(), i.kind.clone())).collect();
+        let mut got: Vec<(String, String)> = c[0]
+            .items
+            .iter()
+            .map(|i| (i.value.clone(), i.kind.clone()))
+            .collect();
         got.sort();
         assert_eq!(
             got,
-            vec![("GONE".to_string(), "removed".to_string()), ("NEW".to_string(), "added".to_string())]
+            vec![
+                ("GONE".to_string(), "removed".to_string()),
+                ("NEW".to_string(), "added".to_string())
+            ]
         );
     }
 

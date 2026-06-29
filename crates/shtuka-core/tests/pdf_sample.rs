@@ -17,7 +17,11 @@ fn pdf_self_diff_clean() {
     // pdf-extract groups text into fewer, denser lines than Go's GetPlainText
     // (113 raw -> 78 after header/footer stripping for this sample), so the bar
     // is lower than the Go test's 100 while still proving substantial extraction.
-    assert!(r.summary.equal >= 50, "expected substantial text, got {} equal", r.summary.equal);
+    assert!(
+        r.summary.equal >= 50,
+        "expected substantial text, got {} equal",
+        r.summary.equal
+    );
 }
 
 #[test]
@@ -29,9 +33,17 @@ fn pdf_header_footer_stripping() {
     let lines = extract_pdf_lines(SAMPLE_PDF).expect("extract");
     let joined = format!("\n{}\n", lines.join("\n"));
     for noisy in ["\nConfidential\n", "Page 1 of 2", "Study number TESTSTUDY"] {
-        assert!(!joined.contains(noisy), "running element not stripped: {:?}", noisy);
+        assert!(
+            !joined.contains(noisy),
+            "running element not stripped: {:?}",
+            noisy
+        );
     }
     for keep in ["n (%)", "ResultToken"] {
-        assert!(joined.contains(keep), "real content wrongly stripped: {:?}", keep);
+        assert!(
+            joined.contains(keep),
+            "real content wrongly stripped: {:?}",
+            keep
+        );
     }
 }

@@ -97,10 +97,14 @@ pub fn compare(path_a: &str, path_b: &str) -> io::Result<Comparison> {
 
     // --- Rename candidates: non-common files, grouped by size so we only hash a
     // file when the other side has a same-size orphan it could match. ---
-    let a_orphans: Vec<&FileMeta> =
-        files_a.iter().filter(|f| !common_set.contains(f.rel.as_str())).collect();
-    let b_orphans: Vec<&FileMeta> =
-        files_b.iter().filter(|f| !common_set.contains(f.rel.as_str())).collect();
+    let a_orphans: Vec<&FileMeta> = files_a
+        .iter()
+        .filter(|f| !common_set.contains(f.rel.as_str()))
+        .collect();
+    let b_orphans: Vec<&FileMeta> = files_b
+        .iter()
+        .filter(|f| !common_set.contains(f.rel.as_str()))
+        .collect();
     let mut b_sizes: HashMap<u64, usize> = HashMap::new();
     for f in &b_orphans {
         *b_sizes.entry(f.size).or_insert(0) += 1;
@@ -182,7 +186,10 @@ pub fn compare(path_a: &str, path_b: &str) -> io::Result<Comparison> {
                 if renamed_to.contains(b_path) {
                     continue; // already paired
                 }
-                cmp.renamed.push(Rename { from: f.rel.clone(), to: b_path.to_string() });
+                cmp.renamed.push(Rename {
+                    from: f.rel.clone(),
+                    to: b_path.to_string(),
+                });
                 renamed_from.insert(f.rel.as_str());
                 renamed_to.insert(b_path);
             }
@@ -241,7 +248,9 @@ fn walk(root: &str) -> io::Result<Vec<FileMeta>> {
             .strip_prefix(root_path)
             .map(|p| p.to_string_lossy().replace('\\', "/"))
             .unwrap_or_else(|_| path.to_string_lossy().to_string());
-        let meta = entry.metadata().map_err(|e| io::Error::other(e.to_string()))?;
+        let meta = entry
+            .metadata()
+            .map_err(|e| io::Error::other(e.to_string()))?;
         files.push(FileMeta {
             rel,
             abs: path.to_path_buf(),

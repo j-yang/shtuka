@@ -83,7 +83,8 @@ async fn save_text_file(
     match chosen {
         Some(p) => {
             let path = p.to_string();
-            std::fs::write(&path, contents.as_bytes()).map_err(|e| format!("write {}: {}", path, e))?;
+            std::fs::write(&path, contents.as_bytes())
+                .map_err(|e| format!("write {}: {}", path, e))?;
             Ok(path)
         }
         None => Ok(String::new()),
@@ -93,17 +94,21 @@ async fn save_text_file(
 /// List all tracks stored under a project root's .shtuka-history.
 #[tauri::command]
 async fn list_tracks(root: String) -> Result<Vec<track::TrackSummary>, String> {
-    tauri::async_runtime::spawn_blocking(move || track::list_tracks(&root).map_err(|e| e.to_string()))
-        .await
-        .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        track::list_tracks(&root).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Load one track's full manifest (changelog).
 #[tauri::command]
 async fn get_track(root: String, id: String) -> Result<track::Track, String> {
-    tauri::async_runtime::spawn_blocking(move || track::get_track(&root, &id).map_err(|e| e.to_string()))
-        .await
-        .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        track::get_track(&root, &id).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Create a new track, ingesting `source_path` as snapshot v1.
@@ -188,7 +193,11 @@ async fn diff_files(
             let mut progress = |side: &str, done: usize, total: usize| {
                 let _ = app.emit(
                     "pdf-progress",
-                    PdfProgress { side: side.to_string(), done, total },
+                    PdfProgress {
+                        side: side.to_string(),
+                        done,
+                        total,
+                    },
                 );
             };
             let text = pdf::pdf_diff_progress(&path_a, &path_b, &mut progress)?;
@@ -220,7 +229,11 @@ async fn pdf_doc_diff(
         let mut progress = |side: &str, done: usize, total: usize| {
             let _ = app.emit(
                 "pdf-progress",
-                PdfProgress { side: side.to_string(), done, total },
+                PdfProgress {
+                    side: side.to_string(),
+                    done,
+                    total,
+                },
             );
         };
         pdf::doc_diff_progress(&path_a, &path_b, &mut progress)
@@ -238,7 +251,11 @@ async fn pdf_page_changes(
     side: String,
     page: usize,
 ) -> Result<Vec<pdf::PageChange>, String> {
-    let s = if side.eq_ignore_ascii_case("a") { pdf::Side::A } else { pdf::Side::B };
+    let s = if side.eq_ignore_ascii_case("a") {
+        pdf::Side::A
+    } else {
+        pdf::Side::B
+    };
     tauri::async_runtime::spawn_blocking(move || pdf::page_changes(&path_a, &path_b, s, page))
         .await
         .map_err(|e| e.to_string())?
@@ -254,17 +271,10 @@ async fn pdf_page_links(path: String, page: usize) -> Result<Vec<pdf::PageLink>,
 
 /// Render one PDF page (0-based) to a PNG data URL at the given pixel width.
 #[tauri::command]
-async fn render_pdf_page(
-    path: String,
-    page_index: usize,
-    width: u32,
-) -> Result<String, String> {
+async fn render_pdf_page(path: String, page_index: usize, width: u32) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let png = pdf::render_page(&path, page_index, width)?;
-        Ok::<String, String>(format!(
-            "data:image/png;base64,{}",
-            base64_encode(&png)
-        ))
+        Ok::<String, String>(format!("data:image/png;base64,{}", base64_encode(&png)))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -273,7 +283,7 @@ async fn render_pdf_page(
 /// Minimal standard base64 encoder (avoids pulling a crate for one use).
 fn base64_encode(data: &[u8]) -> String {
     const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity((data.len() + 2) / 3 * 4);
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
     for chunk in data.chunks(3) {
         let b0 = chunk[0] as u32;
         let b1 = *chunk.get(1).unwrap_or(&0) as u32;
@@ -281,8 +291,16 @@ fn base64_encode(data: &[u8]) -> String {
         let n = (b0 << 16) | (b1 << 8) | b2;
         out.push(T[((n >> 18) & 63) as usize] as char);
         out.push(T[((n >> 12) & 63) as usize] as char);
-        out.push(if chunk.len() > 1 { T[((n >> 6) & 63) as usize] as char } else { '=' });
-        out.push(if chunk.len() > 2 { T[(n & 63) as usize] as char } else { '=' });
+        out.push(if chunk.len() > 1 {
+            T[((n >> 6) & 63) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            T[(n & 63) as usize] as char
+        } else {
+            '='
+        });
     }
     out
 }

@@ -9,22 +9,22 @@
 //! - A unified [`dispatch`] that routes by extension to mumford engines or the
 //!   CDISC XML adapter
 
-pub mod xml;
 pub mod folder;
 pub mod track;
+pub mod xml;
 
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 // Re-export mumford's format types so the Tauri layer and frontend can use them
 // through shtuka_core without a separate mumford dependency.
-pub use mumford::text::TextResult;
-pub use mumford::excel::ExcelResult;
 pub use mumford::docx::DocxResult;
-pub use mumford::rtf::RtfResult;
-pub use mumford::pptx::PptxResult;
-pub use mumford::pdf;
+pub use mumford::excel::ExcelResult;
 pub use mumford::folder::Comparison;
+pub use mumford::pdf;
+pub use mumford::pptx::PptxResult;
+pub use mumford::rtf::RtfResult;
+pub use mumford::text::TextResult;
 
 pub use track::{Snapshot, SnapshotResult, Track, TrackSummary};
 
@@ -70,7 +70,9 @@ pub struct DiffResult {
 /// CDISC define.xml adapter). An empty path on one side means the file is
 /// absent there.
 pub fn dispatch(path_a: &str, path_b: &str) -> Result<DiffResult, String> {
-    let ext = ext_of(path_a).or_else(|| ext_of(path_b)).unwrap_or_default();
+    let ext = ext_of(path_a)
+        .or_else(|| ext_of(path_b))
+        .unwrap_or_default();
 
     let mut res = DiffResult {
         path_a: path_a.into(),
