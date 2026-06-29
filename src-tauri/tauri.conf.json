@@ -41,8 +41,8 @@
   },
   "bundle": {
     "active": true,
-    "publisher": "Jimmy Yang",
-    "copyright": "© 2026 Jimmy Yang",
+    "publisher": "AstraZeneca China Biopharma Programming Team",
+    "copyright": "© 2026 AstraZeneca",
     "createUpdaterArtifacts": true,
     "targets": "all",
     "icon": [

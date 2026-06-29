@@ -27,6 +27,22 @@ function baseName(p: string): string {
   return p.split(/[/\\]/).pop() || p;
 }
 
+// Track is an early-stage feature: only meaningfully tested for Excel, and it
+// may be removed in a future release. Shown prominently atop every Track view.
+function ExperimentalBanner() {
+  return (
+    <div className="px-4 py-2 bg-amber-100 border-b border-amber-300 text-amber-900 text-xs flex items-center gap-2 flex-shrink-0">
+      <span className="font-semibold uppercase tracking-wide bg-amber-500 text-white px-1.5 py-0.5 rounded text-[10px]">
+        Experimental
+      </span>
+      <span>
+        Version tracking is experimental — currently <strong>Excel only</strong>, and it may be
+        removed from the app in a future release.
+      </span>
+    </div>
+  );
+}
+
 interface TrackViewProps {
   root: string;
   onRootChange: (root: string) => void;
@@ -87,18 +103,21 @@ export function TrackView({ root, onRootChange }: TrackViewProps) {
 
   if (!root) {
     return (
-      <div className="flex-1 flex flex-col items-center justify-center text-gray-400 gap-3">
-        <div className="text-4xl opacity-30">🕑</div>
-        <div className="text-sm">Pick a project folder to store version history</div>
-        <button
-          onClick={pickRoot}
-          className="px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-md hover:bg-indigo-700"
-        >
-          Choose project folder
-        </button>
-        <div className="text-xs text-gray-300 max-w-sm text-center">
-          History is saved in a <code className="font-mono">.shtuka-history</code> folder inside it,
-          so it travels with your project.
+      <div className="flex-1 flex flex-col overflow-hidden">
+        <ExperimentalBanner />
+        <div className="flex-1 flex flex-col items-center justify-center text-gray-400 gap-3">
+          <div className="text-4xl opacity-30">🕑</div>
+          <div className="text-sm">Pick a project folder to store version history</div>
+          <button
+            onClick={pickRoot}
+            className="px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-md hover:bg-indigo-700"
+          >
+            Choose project folder
+          </button>
+          <div className="text-xs text-gray-300 max-w-sm text-center">
+            History is saved in a <code className="font-mono">.shtuka-history</code> folder inside it,
+            so it travels with your project.
+          </div>
         </div>
       </div>
     );
@@ -120,6 +139,7 @@ export function TrackView({ root, onRootChange }: TrackViewProps) {
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
+      <ExperimentalBanner />
       <div className="px-4 py-2.5 border-b border-gray-200 flex items-center gap-3 text-xs bg-white flex-shrink-0">
         <span className="text-gray-500">History root:</span>
         <span className="font-mono text-gray-700 truncate flex-1" title={root}>
@@ -226,6 +246,7 @@ function TrackDetail({ root, track, onBack, onUpdate }: TrackDetailProps) {
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
+      <ExperimentalBanner />
       <div className="px-4 py-2.5 border-b border-gray-200 flex items-center gap-3 text-xs bg-white flex-shrink-0">
         <button
           onClick={onBack}

@@ -6,17 +6,16 @@ In arithmetic geometry, a *shtuka* encodes the compatible variations between two
 
 ## What it does
 
-- 📁 Folder comparison with file-level and content-level analysis
-- 📊 Excel diff (`.xlsx` / `.xls` / `.xlsm`) — cell-level, key-aligned row matching
-- 📄 Word diff (`.docx`) — paragraph and table-level
-- 📑 PowerPoint diff (`.pptx`) — slide and shape-level
-- 📝 Plain text / CSV diff — line + character level
-- 📕 PDF diff — text extraction with running header/footer stripping, page rendering
-- 📃 RTF diff — rendered to plain text
-- 🔬 CDISC `define.xml` diff — ODM-aware (domain, variable, codelist, value-level mapping)
-- 🕑 Variable history / snapshot tracking
-- 🔍 Rename detection via content hashing
-- 🎨 Modern, fast, native UI
+- Folder comparison with file-level and content-level analysis
+- Excel diff (`.xlsx` / `.xls` / `.xlsm`) — cell-level, key-aligned row matching
+- Word diff (`.docx`) — paragraph and table-level
+- PowerPoint diff (`.pptx`) — slide and shape-level
+- Plain text / CSV diff (`.txt` / `.csv`) — line + character level
+- PDF diff (`.pdf`) — text extraction with running header/footer stripping, page rendering
+- RTF diff (`.rtf`) — rendered to plain text
+- CDISC `define.xml` diff — ODM-aware (domain, variable, codelist, value-level mapping)
+- Variable history / snapshot tracking
+- Rename detection via content hashing
 
 ## Architecture
 
