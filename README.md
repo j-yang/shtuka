@@ -9,9 +9,12 @@ In arithmetic geometry, a *shtuka* encodes the compatible variations between two
 - 📁 Folder comparison with file-level and content-level analysis
 - 📊 Excel diff (`.xlsx` / `.xls` / `.xlsm`) — cell-level, key-aligned row matching
 - 📄 Word diff (`.docx`) — paragraph and table-level
+- 📑 PowerPoint diff (`.pptx`) — slide and shape-level
 - 📝 Plain text / CSV diff — line + character level
-- 📕 PDF diff — text extraction with running header/footer stripping
+- 📕 PDF diff — text extraction with running header/footer stripping, page rendering
 - 📃 RTF diff — rendered to plain text
+- 🔬 CDISC `define.xml` diff — ODM-aware (domain, variable, codelist, value-level mapping)
+- 🕑 Variable history / snapshot tracking
 - 🔍 Rename detection via content hashing
 - 🎨 Modern, fast, native UI
 
@@ -19,44 +22,41 @@ In arithmetic geometry, a *shtuka* encodes the compatible variations between two
 
 shtuka is a [Tauri v2](https://tauri.app) desktop app: a Rust backend driving a
 React + TypeScript + Tailwind frontend in the system webview (WebView2 on
-Windows). It was rewritten from an earlier Go + Wails implementation; the UI is
-unchanged, and the diff engine now lives in a pure-Rust crate.
+Windows).
+
+The diff engines live in **two standalone Rust crates** developed alongside
+shtuka and published to [crates.io](https://crates.io):
+
+| Crate | Role | Repository |
+|---|---|---|
+| [**`tate`**](https://github.com/j-yang/tate) | Self-contained structured diff library — line diff, grid alignment, tree comparison. The pure algorithmic core (Myers/patience/Hirschberg, key-aligned rows, tree diff) with no format or GUI dependencies. | <https://github.com/j-yang/tate> |
+| [**`mumford`**](https://github.com/j-yang/mumford) | Format-aware diff engines built on `tate` — PDF, Word, Excel, RTF, PowerPoint, JSON, plain text. Each engine parses a document format and emits a structured diff result. | <https://github.com/j-yang/mumford> |
+
+`shtuka-core` is a thin adapter on top of these: it routes a file pair to the
+right `mumford` engine by extension, adds the CDISC `define.xml` tree-diff
+(using `tate`'s tree comparison), folder comparison with content-aware Excel
+fingerprinting, and snapshot/version-history tracking.
 
 ```
 shtuka/
 ├── Cargo.toml                   # Rust workspace
 ├── crates/
-│   └── shtuka-core/             # Pure-Rust diff engine (no GUI deps, fully tested)
+│   └── shtuka-core/             # Adapter on tate + mumford (no GUI deps, tested)
 │       └── src/
-│           ├── myers.rs         # Patience anchors + LCS + Hirschberg
-│           ├── text.rs          # Plain text
-│           ├── excel.rs         # Excel (calamine), key-aligned rows
-│           ├── docx.rs          # Word (zip + quick-xml)
-│           ├── rtf.rs           # RTF → text
-│           ├── pdf.rs           # PDF (pdf-extract) + header/footer stripping
+│           ├── lib.rs           # DiffResult + dispatch() — route by file type
+│           ├── xml.rs           # CDISC define.xml tree diff (ODM semantics)
 │           ├── folder.rs        # Folder compare (sha256 + rename detection)
-│           └── lib.rs           # Dispatch by file type
-├── src-tauri/                   # Tauri backend (3 commands)
-│   ├── src/lib.rs               # select_folder / compare_folders / diff_files
+│           └── track.rs         # Snapshot / variable-history tracking
+├── src-tauri/                   # Tauri backend
+│   ├── src/lib.rs               # Tauri commands (folder/file/pdf/track)
 │   ├── tauri.conf.json
 │   └── capabilities/
-└── frontend/                    # React + TypeScript + Tailwind (unchanged UI)
+└── frontend/                    # React + TypeScript + Tailwind
     └── src/
         ├── App.tsx
-        ├── tree.ts
-        ├── types.ts
-        └── components/
-            ├── DualTree.tsx
-            ├── DiffView.tsx
-            ├── ExcelDiffPane.tsx
-            ├── Toolbar.tsx
-            └── FolderPicker.tsx
+        └── components/          # DualTree, DiffView, ExcelDiffPane,
+                                 # PdfPagesView, RtfDiffView, XmlDiffView, …
 ```
-
-The three Rust commands (`select_folder`, `compare_folders`, `diff_files`) are
-exposed to the frontend through `frontend/wailsjs/go/main/App.js`, a thin shim
-that keeps the original import path so no component code changed: it now calls
-Tauri's `invoke` instead of the Wails bridge.
 
 ## Quick start
 
@@ -68,6 +68,9 @@ Tauri's `invoke` instead of the Wails bridge.
   - **Windows**: WebView2 (preinstalled on Windows 10/11)
   - **Linux**: `webkit2gtk-4.1`, `libgtk-3-dev`, `librsvg2-dev`, `pkg-config`
   - **macOS**: Xcode command-line tools
+
+The `tate` and `mumford` crates are pulled automatically from crates.io by
+Cargo — no extra setup needed.
 
 ### Develop
 
@@ -85,13 +88,23 @@ npm run tauri:build
 # Windows output: src-tauri/target/release/bundle/{nsis,msi}/...
 ```
 
-## Testing the diff engine
+## Testing the core adapter
 
-The core engine is independent of the GUI and can be tested anywhere Rust runs:
+The core adapter is independent of the GUI and can be tested anywhere Rust runs:
 
 ```bash
 cargo test -p shtuka-core
 ```
+
+(The underlying diff algorithms and format engines have their own test suites
+in the [`tate`](https://github.com/j-yang/tate) and
+[`mumford`](https://github.com/j-yang/mumford) repositories.)
+
+## Releasing
+
+See [RELEASING.md](RELEASING.md). Releases are built for Windows, macOS, and
+Linux by GitHub Actions and published as a GitHub Release; the app self-updates
+via Tauri's signed updater.
 
 ## License
 

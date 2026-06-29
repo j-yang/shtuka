@@ -19,8 +19,8 @@ node_modules/
 *.so
 *.dylib
 # ...but ship the redistributable runtime DLLs with the Windows build.
+# The built exe is NOT tracked — CI produces it; build locally into dist-windows/.
 !dist-windows/*.dll
-!dist-windows/*.exe
 
 # IDE
 .idea/
