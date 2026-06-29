@@ -5,6 +5,8 @@ import { DiffView } from './components/DiffView';
 import { CompareFiles } from './components/CompareFiles';
 import { TrackView } from './components/TrackView';
 import { UpdateChecker } from './components/UpdateChecker';
+import { About } from './components/About';
+import { BugReport } from './components/BugReport';
 import { Comparison } from './types';
 import { CompareFolders } from '../wailsjs/go/main/App';
 
@@ -129,7 +131,9 @@ export default function App() {
             )}
           </div>
         )}
+          <BugReport />
           <UpdateChecker />
+          <About />
         </div>
       </header>
 

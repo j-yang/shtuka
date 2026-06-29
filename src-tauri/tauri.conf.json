@@ -41,6 +41,8 @@
   },
   "bundle": {
     "active": true,
+    "publisher": "Jimmy Yang",
+    "copyright": "© 2026 Jimmy Yang",
     "createUpdaterArtifacts": true,
     "targets": "all",
     "icon": [
