@@ -24,19 +24,24 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # updater_glob: the exact updater artifact the .sig is paired with on
+          # this platform (Tauri v2). Used to pick the right asset + signature.
           - platform: windows-latest
             updater_platform: windows-x86_64
+            updater_glob: '*-setup.nsis.zip'
             pdfium_asset: pdfium-win-x64.tgz
             pdfium_lib: bin/pdfium.dll
             pdfium_dest: pdfium.dll
           - platform: ubuntu-22.04
             updater_platform: linux-x86_64
+            updater_glob: '*.AppImage'
             pdfium_asset: pdfium-linux-x64.tgz
             pdfium_lib: lib/libpdfium.so
             pdfium_dest: libpdfium.so
           - platform: macos-latest
             updater_platform: darwin-aarch64
             rust_target: aarch64-apple-darwin
+            updater_glob: '*.app.tar.gz'
             pdfium_asset: pdfium-mac-arm64.tgz
             pdfium_lib: lib/libpdfium.dylib
             pdfium_dest: libpdfium.dylib
@@ -112,17 +117,18 @@ jobs:
       # --- Build the app + bundles + signed updater artifacts ---
       # `createUpdaterArtifacts: true` in tauri.conf.json makes the build emit
       # the updater bundle and its detached `.sig` next to the installers.
+      # Run from the repo root so the Tauri CLI finds src-tauri/tauri.conf.json
+      # (it searches subfolders of the cwd; from frontend/ it can't see it).
       - name: Build
-        working-directory: frontend
         shell: bash
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           if [ -n "${{ matrix.rust_target }}" ]; then
-            ./node_modules/.bin/tauri build --target "${{ matrix.rust_target }}"
+            ./frontend/node_modules/.bin/tauri build --target "${{ matrix.rust_target }}"
           else
-            ./node_modules/.bin/tauri build
+            ./frontend/node_modules/.bin/tauri build
           fi
 
       # Collect every installer + updater artifact + .sig into one flat dir, and
@@ -138,28 +144,46 @@ jobs:
             BUNDLE="target/release/bundle"
           fi
           mkdir -p staging
-          # Installers + updater bundles (nsis/msi/appimage/deb/rpm/dmg/macos).
-          # Copy everything; the publish job uploads them all as release assets.
+          echo "Bundle tree:"; find "$BUNDLE" -type f | sort
+
+          # The updater artifact is whatever Tauri produced a detached .sig for.
+          # Find every .sig, then for each copy both the signed artifact and its
+          # .sig into staging. (avoid `find | head` so pipefail can't kill us.)
+          mapfile -t SIGS < <(find "$BUNDLE" -type f -name '*.sig' | sort)
+          if [ "${#SIGS[@]}" -eq 0 ]; then
+            echo "No .sig produced — updater signing did not run (check secrets)." >&2
+            exit 1
+          fi
+
+          # Pick the updater artifact matching this platform's expected kind.
+          UPDATER_SIG=""
+          for s in "${SIGS[@]}"; do
+            case "${s%.sig}" in
+              *${{ matrix.updater_glob }}) UPDATER_SIG="$s" ;;
+            esac
+          done
+          if [ -z "$UPDATER_SIG" ]; then
+            echo "No .sig matched ${{ matrix.updater_glob }}; sigs were:" >&2
+            printf '  %s\n' "${SIGS[@]}" >&2
+            exit 1
+          fi
+          ARTIFACT="${UPDATER_SIG%.sig}"
+          ARTIFACT_NAME=$(basename "$ARTIFACT")
+          SIGNATURE=$(cat "$UPDATER_SIG")
+
+          # Copy the user-facing installers + the signed updater artifact (no
+          # .sig files: their contents go into latest.json instead).
           find "$BUNDLE" -type f \
             \( -name '*.exe' -o -name '*.msi' -o -name '*.AppImage' \
                -o -name '*.deb' -o -name '*.rpm' -o -name '*.dmg' \
-               -o -name '*.app.tar.gz' -o -name '*.sig' \) \
+               -o -name '*.app.tar.gz' \) \
             -exec cp {} staging/ \;
-          ls -la staging/
+          # Ensure the signed updater artifact is present even if its extension
+          # is not in the list above (e.g. a .zip updater bundle).
+          cp "$ARTIFACT" staging/ 2>/dev/null || true
+          echo "Staged:"; ls -la staging/
 
-          # Locate the updater artifact for this platform = the file that has a
-          # matching <file>.sig (excluding the .sig itself).
-          SIG=$(find staging -name '*.sig' | head -n1)
-          if [ -z "$SIG" ]; then
-            echo "No .sig produced — updater signing did not run." >&2
-            exit 1
-          fi
-          ARTIFACT="${SIG%.sig}"
-          ARTIFACT_NAME=$(basename "$ARTIFACT")
-          SIGNATURE=$(cat "$SIG")
           URL="https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/${ARTIFACT_NAME}"
-
-          # One fragment per platform; the publish job merges them.
           mkdir -p fragments
           printf '{"%s":{"signature":%s,"url":%s}}' \
             "${{ matrix.updater_platform }}" \
