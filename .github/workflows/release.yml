@@ -28,7 +28,7 @@ jobs:
           # this platform (Tauri v2). Used to pick the right asset + signature.
           - platform: windows-latest
             updater_platform: windows-x86_64
-            updater_glob: '*-setup.nsis.zip'
+            updater_glob: '*-setup.exe'
             pdfium_asset: pdfium-win-x64.tgz
             pdfium_lib: bin/pdfium.dll
             pdfium_dest: pdfium.dll
@@ -147,24 +147,23 @@ jobs:
           echo "Bundle tree:"; find "$BUNDLE" -type f | sort
 
           # The updater artifact is whatever Tauri produced a detached .sig for.
-          # Find every .sig, then for each copy both the signed artifact and its
-          # .sig into staging. (avoid `find | head` so pipefail can't kill us.)
-          mapfile -t SIGS < <(find "$BUNDLE" -type f -name '*.sig' | sort)
-          if [ "${#SIGS[@]}" -eq 0 ]; then
-            echo "No .sig produced — updater signing did not run (check secrets)." >&2
-            exit 1
-          fi
-
-          # Pick the updater artifact matching this platform's expected kind.
+          # Collect every .sig with a plain loop (macOS ships bash 3.2 — no
+          # `mapfile`), and pick the one matching this platform's updater kind.
+          SIGS=""
           UPDATER_SIG=""
-          for s in "${SIGS[@]}"; do
+          while IFS= read -r s; do
+            SIGS="$SIGS$s"$'\n'
             case "${s%.sig}" in
               *${{ matrix.updater_glob }}) UPDATER_SIG="$s" ;;
             esac
-          done
+          done < <(find "$BUNDLE" -type f -name '*.sig')
+          if [ -z "$SIGS" ]; then
+            echo "No .sig produced — updater signing did not run (check secrets)." >&2
+            exit 1
+          fi
           if [ -z "$UPDATER_SIG" ]; then
             echo "No .sig matched ${{ matrix.updater_glob }}; sigs were:" >&2
-            printf '  %s\n' "${SIGS[@]}" >&2
+            printf '%s' "$SIGS" >&2
             exit 1
           fi
           ARTIFACT="${UPDATER_SIG%.sig}"
