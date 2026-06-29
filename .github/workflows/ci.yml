@@ -2,6 +2,10 @@ name: ci
 
 # Pre-merge checks: run on every PR and on pushes to main. Catches build/test
 # breakage before a release tag is cut (release.yml only runs on `v*` tags).
+#
+# NOTE: this org restricts third-party actions to an allow-list. We therefore
+# use only `actions/*` (GitHub-owned) actions and otherwise drive the runner's
+# preinstalled toolchains (rustup/cargo, node/npm) directly via `run:`.
 on:
   pull_request:
   push:
@@ -26,11 +30,28 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
             librsvg2-dev patchelf libgtk-3-dev
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
+      # rustup is preinstalled on GitHub-hosted runners; just pin stable and add
+      # the components we need (replaces dtolnay/rust-toolchain).
+      - name: Set up Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt clippy
+          rustup default stable
+          rustc --version && cargo --version
 
-      - uses: swatinem/rust-cache@v2
+      # Cargo registry + build cache (replaces swatinem/rust-cache with the
+      # GitHub-owned actions/cache). Keyed on the lockfile; falls back to the
+      # newest partial cache for the same OS.
+      - name: Cache cargo + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
 
       # pdfium is loaded at runtime by the shtuka-core PDF tests / the app; fetch
       # the same pinned build the release uses so a compile that links it works.

@@ -43,7 +43,7 @@ signed and you must ship a new pubkey.
 ## How updates work
 
 `tauri.conf.json` points the updater at:
-`https://github.com/azu-ecs/shtuka/releases/latest/download/latest.json`.
+`https://github.com/azu-oncology-rd/shtuka/releases/latest/download/latest.json`.
 The app downloads it, compares versions, and if newer, downloads the signed
 artifact for the current OS, verifies it against the embedded public key,
 installs, and relaunches.

@@ -1,32 +1,42 @@
 name: release
 
 # Build and publish shtuka for Windows, macOS and Linux on every version tag.
-# Push a tag like `v0.2.0` to trigger; the job creates a GitHub Release with the
+# Push a tag like `v0.2.0` to trigger; this creates a GitHub Release with the
 # installers + the updater `latest.json` (signed with the updater private key).
+#
+# NOTE: this org restricts third-party actions to an allow-list, so we cannot
+# use tauri-apps/tauri-action. Instead each platform builds with the Tauri CLI
+# (preinstalled toolchains, driven via `run:`), uploads its bundles as a
+# workflow artifact, and a final `publish` job assembles the GitHub Release and
+# the updater manifest using the `gh` CLI (preinstalled on the runner). Only
+# GitHub-owned `actions/*` actions are used.
 on:
   push:
     tags:
       - 'v*'
 
-# tauri-action needs to create the release and upload assets.
 permissions:
   contents: write
 
 jobs:
-  release:
+  build:
     strategy:
       fail-fast: false
       matrix:
         include:
           - platform: windows-latest
+            updater_platform: windows-x86_64
             pdfium_asset: pdfium-win-x64.tgz
             pdfium_lib: bin/pdfium.dll
             pdfium_dest: pdfium.dll
           - platform: ubuntu-22.04
+            updater_platform: linux-x86_64
             pdfium_asset: pdfium-linux-x64.tgz
             pdfium_lib: lib/libpdfium.so
             pdfium_dest: libpdfium.so
           - platform: macos-latest
+            updater_platform: darwin-aarch64
+            rust_target: aarch64-apple-darwin
             pdfium_asset: pdfium-mac-arm64.tgz
             pdfium_lib: lib/libpdfium.dylib
             pdfium_dest: libpdfium.dylib
@@ -48,13 +58,32 @@ jobs:
         with:
           node-version: 20
 
-      - uses: dtolnay/rust-toolchain@stable
+      # rustup is preinstalled on GitHub-hosted runners (replaces
+      # dtolnay/rust-toolchain). Add the macOS aarch64 target where needed.
+      - name: Set up Rust
+        shell: bash
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          if [ -n "${{ matrix.rust_target }}" ]; then
+            rustup target add "${{ matrix.rust_target }}"
+          fi
+          rustc --version && cargo --version
 
-      # The Cargo workspace manifest and its target/ dir are at the repo root
-      # (members = crates/shtuka-core, src-tauri), not under src-tauri/.
-      - uses: swatinem/rust-cache@v2
+      # Cargo cache via the GitHub-owned actions/cache (replaces
+      # swatinem/rust-cache). target/ lives at the repo root (workspace).
+      - name: Cache cargo + target
+        uses: actions/cache@v4
         with:
-          workspaces: '. -> target'
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-release-
+            ${{ runner.os }}-cargo-
 
       - name: Install frontend deps
         working-directory: frontend
@@ -64,6 +93,7 @@ jobs:
       # Build chromium/7763 matches the pdfium-render 0.9.2 ABI we pin.
       - name: Fetch pdfium (Unix)
         if: matrix.platform != 'windows-latest'
+        shell: bash
         run: |
           mkdir -p src-tauri/resources
           curl -sL -o pdfium.tgz "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium%2F7763/${{ matrix.pdfium_asset }}"
@@ -79,18 +109,113 @@ jobs:
           tar xzf pdfium.tgz "${{ matrix.pdfium_lib }}"
           Move-Item "${{ matrix.pdfium_lib }}" "src-tauri/resources/${{ matrix.pdfium_dest }}"
 
-      - name: Build & release
-        uses: tauri-apps/tauri-action@v0
+      # --- Build the app + bundles + signed updater artifacts ---
+      # `createUpdaterArtifacts: true` in tauri.conf.json makes the build emit
+      # the updater bundle and its detached `.sig` next to the installers.
+      - name: Build
+        working-directory: frontend
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if [ -n "${{ matrix.rust_target }}" ]; then
+            ./node_modules/.bin/tauri build --target "${{ matrix.rust_target }}"
+          else
+            ./node_modules/.bin/tauri build
+          fi
+
+      # Collect every installer + updater artifact + .sig into one flat dir, and
+      # emit a latest.json fragment for this platform (the .sig contents are the
+      # updater signature; the URL points at the release asset we will upload).
+      - name: Stage artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "${{ matrix.rust_target }}" ]; then
+            BUNDLE="target/${{ matrix.rust_target }}/release/bundle"
+          else
+            BUNDLE="target/release/bundle"
+          fi
+          mkdir -p staging
+          # Installers + updater bundles (nsis/msi/appimage/deb/rpm/dmg/macos).
+          # Copy everything; the publish job uploads them all as release assets.
+          find "$BUNDLE" -type f \
+            \( -name '*.exe' -o -name '*.msi' -o -name '*.AppImage' \
+               -o -name '*.deb' -o -name '*.rpm' -o -name '*.dmg' \
+               -o -name '*.app.tar.gz' -o -name '*.sig' \) \
+            -exec cp {} staging/ \;
+          ls -la staging/
+
+          # Locate the updater artifact for this platform = the file that has a
+          # matching <file>.sig (excluding the .sig itself).
+          SIG=$(find staging -name '*.sig' | head -n1)
+          if [ -z "$SIG" ]; then
+            echo "No .sig produced — updater signing did not run." >&2
+            exit 1
+          fi
+          ARTIFACT="${SIG%.sig}"
+          ARTIFACT_NAME=$(basename "$ARTIFACT")
+          SIGNATURE=$(cat "$SIG")
+          URL="https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/${ARTIFACT_NAME}"
+
+          # One fragment per platform; the publish job merges them.
+          mkdir -p fragments
+          printf '{"%s":{"signature":%s,"url":%s}}' \
+            "${{ matrix.updater_platform }}" \
+            "$(printf '%s' "$SIGNATURE" | jq -Rs .)" \
+            "$(printf '%s' "$URL" | jq -Rs .)" \
+            > "fragments/${{ matrix.updater_platform }}.json"
+          cat "fragments/${{ matrix.updater_platform }}.json"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
         with:
-          projectPath: src-tauri
-          tagName: ${{ github.ref_name }}
-          releaseName: 'shtuka ${{ github.ref_name }}'
-          releaseBody: 'See the assets below. The app can self-update via "Check for update".'
-          releaseDraft: false
-          prerelease: false
-          # macOS runner is Apple Silicon by default; build that target.
-          args: ${{ matrix.platform == 'macos-latest' && '--target aarch64-apple-darwin' || '' }}
+          name: bundles-${{ matrix.updater_platform }}
+          path: |
+            staging/
+            fragments/
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      # Flatten: dist/bundles-<platform>/{staging,fragments}/...
+      - name: Assemble release assets and updater manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p assets fragments
+          find dist -path '*/staging/*' -type f -exec cp {} assets/ \;
+          find dist -path '*/fragments/*' -name '*.json' -exec cp {} fragments/ \;
+          echo "Release assets:"; ls -la assets/
+
+          # Merge per-platform fragments into the updater platforms map.
+          PLATFORMS=$(jq -s 'add' fragments/*.json)
+          VERSION="${GITHUB_REF_NAME#v}"
+          PUB_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          jq -n \
+            --arg version "$VERSION" \
+            --arg notes "See the assets below. The app can self-update via \"Check for update\"." \
+            --arg pub_date "$PUB_DATE" \
+            --argjson platforms "$PLATFORMS" \
+            '{version:$version, notes:$notes, pub_date:$pub_date, platforms:$platforms}' \
+            > assets/latest.json
+          echo "latest.json:"; cat assets/latest.json
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "shtuka $GITHUB_REF_NAME" \
+            --notes 'See the assets below. The app can self-update via "Check for update".' \
+            assets/*
