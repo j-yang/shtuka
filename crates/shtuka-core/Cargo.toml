@@ -6,8 +6,8 @@ description = "Clinical trial document diff — CDISC adapter + app features bui
 license = "MIT"
 
 [dependencies]
-tate = { path = "../../../tate" }
-mumford = { path = "../../../mumford" }
+tate = "0.1.0"
+mumford = "0.1.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
