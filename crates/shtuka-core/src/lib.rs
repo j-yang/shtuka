@@ -10,6 +10,7 @@
 //!   CDISC XML adapter
 
 pub mod folder;
+pub mod rtf;
 pub mod track;
 pub mod xml;
 
@@ -23,8 +24,8 @@ pub use mumford::excel::ExcelResult;
 pub use mumford::folder::Comparison;
 pub use mumford::pdf;
 pub use mumford::pptx::PptxResult;
-pub use mumford::rtf::RtfResult;
 pub use mumford::text::TextResult;
+pub use crate::rtf::RtfResult;
 
 pub use track::{Snapshot, SnapshotResult, Track, TrackSummary};
 
@@ -95,7 +96,7 @@ pub fn dispatch(path_a: &str, path_b: &str) -> Result<DiffResult, String> {
             return Err("legacy .doc format not supported (please convert to .docx)".into());
         }
         "rtf" => {
-            let r = mumford::rtf::rtf_diff(path_a, path_b)?;
+            let r = crate::rtf::rtf_diff(path_a, path_b)?;
             res.file_type = "rtf".into();
             res.rtf = Some(r);
         }

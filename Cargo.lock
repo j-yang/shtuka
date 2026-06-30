@@ -2337,9 +2337,8 @@ dependencies = [
 
 [[package]]
 name = "mumford"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4f8a86203f95d34262ac6de040412d0d2d2bda417ca370709528e33f2d384569"
+version = "0.4.0"
+source = "git+https://github.com/j-yang/mumford.git#0f061b62aa134e80e6ef94458c4d21c2cc16ee32"
 dependencies = [
  "calamine",
  "libloading 0.7.4",
@@ -3965,9 +3964,9 @@ checksum = "61c41af27dd6d1e27b1b16b489db798443478cef1f06a660c96db617ba5de3b1"
 
 [[package]]
 name = "tate"
-version = "0.1.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4fae8fe73dd5910b49c73d29a6c765f4fd5911904d7bc18b8b29c1a61a5e246f"
+checksum = "38f047f4938b1d26cbafdfd79a485e9d2cf4985ed8339c28bf3a0a4bbb0efdd3"
 dependencies = [
  "serde",
 ]
