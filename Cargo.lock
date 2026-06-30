@@ -2338,7 +2338,8 @@ dependencies = [
 [[package]]
 name = "mumford"
 version = "0.4.0"
-source = "git+https://github.com/j-yang/mumford.git#0f061b62aa134e80e6ef94458c4d21c2cc16ee32"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b81ea5ca4cc9450b7377782b831c0ec4dd65c6d1abc1243d850e34b9cebc5eca"
 dependencies = [
  "calamine",
  "libloading 0.7.4",
@@ -3651,7 +3652,7 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
 name = "shtuka"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "serde",
  "serde_json",
@@ -3666,7 +3667,7 @@ dependencies = [
 
 [[package]]
 name = "shtuka-core"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "calamine",
  "mumford",
