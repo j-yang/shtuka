@@ -9,10 +9,11 @@
 //! - A unified [`dispatch`] that routes by extension to mumford engines or the
 //!   CDISC XML adapter
 
-pub mod folder;
 pub mod rtf;
 pub mod track;
 pub mod xml;
+
+pub use mumford::folder;
 
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -21,7 +22,6 @@ use std::path::Path;
 // through shtuka_core without a separate mumford dependency.
 pub use mumford::docx::DocxResult;
 pub use mumford::excel::ExcelResult;
-pub use mumford::folder::Comparison;
 pub use mumford::pdf;
 pub use mumford::pptx::PptxResult;
 pub use mumford::text::TextResult;
@@ -29,16 +29,8 @@ pub use crate::rtf::RtfResult;
 
 pub use track::{Snapshot, SnapshotResult, Track, TrackSummary};
 
-/// Lowercase hex encoding, shared by the folder and track hashers.
-pub fn folder_hex(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for &b in bytes {
-        s.push(HEX[(b >> 4) as usize] as char);
-        s.push(HEX[(b & 0x0f) as usize] as char);
-    }
-    s
-}
+/// Lowercase hex encoding — delegates to mumford.
+pub use mumford::hex as folder_hex;
 
 /// The unified diff result the frontend consumes. Exactly one of the
 /// format-specific fields is set.

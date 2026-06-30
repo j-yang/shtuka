@@ -399,9 +399,9 @@ fn extract_var_row(path: &str, sheet: &str, var_name: &str) -> (Vec<String>, Opt
             Data::Int(i) => i.to_string(),
             Data::Bool(b) => {
                 if *b {
-                    "TRUE".into()
+                    "true".into()
                 } else {
-                    "FALSE".into()
+                    "false".into()
                 }
             }
             Data::DateTime(dt) => format!("{}", dt.as_f64()),
