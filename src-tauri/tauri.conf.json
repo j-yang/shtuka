@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "shtuka",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "identifier": "com.shtuka.app",
   "build": {
     "frontendDist": "../frontend/dist",
@@ -35,7 +35,7 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEI3QzM3QTJGNDlCQTE1ODEKUldTQkZicEpMM3JEdHdPcHNWbjhNNTR2WURpQitJTE1ZbjQvVG1TeVNOaFJPU1JpTDhoZnIwSkgK",
       "endpoints": [
-        "https://github.com/azu-oncology-rd/shtuka/releases/latest/download/latest.json"
+        "https://github.com/j-yang/shtuka/releases/latest/download/latest.json"
       ]
     }
   },
@@ -53,6 +53,11 @@
     ],
     "shortDescription": "Format-aware diff tool",
     "longDescription": "shtuka reveals every meaningful change between two documents — folders, text, Excel, Word, PDF and RTF.",
-    "resources": ["resources/*"]
+    "resources": ["resources/*"],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
   }
 }

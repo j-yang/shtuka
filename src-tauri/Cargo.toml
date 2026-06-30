@@ -1,6 +1,6 @@
 [package]
 name = "shtuka"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2021"
 description = "Format-aware diff tool"
 authors = ["Jimmy Yang"]

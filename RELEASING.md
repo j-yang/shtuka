@@ -43,10 +43,18 @@ signed and you must ship a new pubkey.
 ## How updates work
 
 `tauri.conf.json` points the updater at:
-`https://github.com/azu-oncology-rd/shtuka/releases/latest/download/latest.json`.
+`https://github.com/j-yang/shtuka/releases/latest/download/latest.json`.
 The app downloads it, compares versions, and if newer, downloads the signed
 artifact for the current OS, verifies it against the embedded public key,
 installs, and relaunches.
+
+> **Why the personal repo for updates?** The `azu-oncology-rd` org enforces
+> SAML SSO, so anonymous requests to its release assets get redirected to a
+> login page — the in-app updater (an unauthenticated HTTP client) can't read
+> them. Releases are therefore mirrored to the public, SSO-free
+> `j-yang/shtuka`, which the updater can reach. Both repos sign with the same
+> updater key, so the embedded public key validates either source. The org
+> repo remains the source of truth for code.
 
 ## pdfium
 
