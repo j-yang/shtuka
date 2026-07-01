@@ -1,6 +1,17 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { ExcelResult, SheetDiff, GridRow, TrackContext } from '../types';
 import { VarHistoryView } from './VarHistoryView';
+
+// Zoom scales the grid's base font size; column widths (below) are in px and are
+// independent of zoom so a resized column keeps its absolute width.
+const ZOOM_MIN = 0.6;
+const ZOOM_MAX = 2.5;
+const ZOOM_STEP = 0.1;
+const BASE_FONT_PT = 8.5;
+// Default / min / max per-column width in px (before zoom).
+const DEFAULT_COL_W = 128;
+const MIN_COL_W = 40;
+const ROWNUM_COL_W = 72; // the sticky A/B row-number column
 
 // Tab color reflects the sheet's overall status.
 const tabStatusClass: Record<SheetDiff['status'], string> = {
@@ -25,6 +36,8 @@ export function ExcelDiffPane({ result, trackContext }: { result: ExcelResult; t
   const [activeName, setActiveName] = useState<string | null>(null);
   // When in a Track snapshot diff, clicking a variable name opens its history.
   const [histVar, setHistVar] = useState<string | null>(null);
+  const [zoom, setZoom] = useState(1);
+  const clampZoom = (z: number) => Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z));
 
   const changedCount = result.sheets.filter(s => s.status !== 'equal').length;
 
@@ -85,6 +98,29 @@ export function ExcelDiffPane({ result, trackContext }: { result: ExcelResult; t
             />
             show unchanged rows
           </label>
+          <div className="flex items-center gap-1">
+            <button
+              className="px-1.5 py-0.5 rounded border border-gray-300 text-gray-600 hover:bg-gray-100 leading-none text-[11px]"
+              title="Zoom out"
+              onClick={() => setZoom(z => clampZoom(z - ZOOM_STEP))}
+            >
+              A−
+            </button>
+            <button
+              className="px-1.5 py-0.5 rounded border border-gray-300 text-gray-500 hover:bg-gray-100 leading-none tabular-nums text-[11px]"
+              title="Reset zoom"
+              onClick={() => setZoom(1)}
+            >
+              {Math.round(zoom * 100)}%
+            </button>
+            <button
+              className="px-1.5 py-0.5 rounded border border-gray-300 text-gray-600 hover:bg-gray-100 leading-none text-[11px]"
+              title="Zoom in"
+              onClick={() => setZoom(z => clampZoom(z + ZOOM_STEP))}
+            >
+              A+
+            </button>
+          </div>
         </div>
       </div>
 
@@ -93,6 +129,7 @@ export function ExcelDiffPane({ result, trackContext }: { result: ExcelResult; t
           key={sheet.name}
           sheet={sheet}
           showAll={showAllRows}
+          zoom={zoom}
           onVar={trackContext ? setHistVar : undefined}
         />
       ) : (
@@ -138,8 +175,42 @@ interface DisplayItem {
   fromIdx?: number;
 }
 
-function SheetGrid({ sheet, showAll, onVar }: { sheet: SheetDiff; showAll: boolean; onVar?: (varName: string) => void }) {
+function SheetGrid({
+  sheet,
+  showAll,
+  zoom,
+  onVar,
+}: {
+  sheet: SheetDiff;
+  showAll: boolean;
+  zoom: number;
+  onVar?: (varName: string) => void;
+}) {
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
+  // Per-column pixel widths, keyed by column index. Unset = DEFAULT_COL_W.
+  const [widths, setWidths] = useState<Record<number, number>>({});
+  const drag = useRef<{ ci: number; startX: number; startW: number } | null>(null);
+
+  const colW = (ci: number) => widths[ci] ?? DEFAULT_COL_W;
+
+  const onDragStart = (ci: number, e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    drag.current = { ci, startX: e.clientX, startW: colW(ci) };
+    const onMove = (ev: MouseEvent) => {
+      if (!drag.current) return;
+      const dx = ev.clientX - drag.current.startX;
+      const w = Math.max(MIN_COL_W, Math.round(drag.current.startW + dx));
+      setWidths(prev => ({ ...prev, [drag.current!.ci]: w }));
+    };
+    const onUp = () => {
+      drag.current = null;
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  };
 
   // Decide which unchanged rows to hide. Keep CONTEXT rows around any change.
   const items = useMemo<DisplayItem[]>(() => {
@@ -181,28 +252,40 @@ function SheetGrid({ sheet, showAll, onVar }: { sheet: SheetDiff; showAll: boole
   const colCount = sheet.columns.length;
 
   return (
-    <div className="flex-1 overflow-auto">
-      <table className="border-collapse text-xs font-mono w-max">
+    <div className="flex-1 overflow-auto" style={{ fontSize: `${(BASE_FONT_PT * zoom).toFixed(2)}pt` }}>
+      <table className="border-collapse font-mono" style={{ tableLayout: 'fixed', width: 'max-content' }}>
+        <colgroup>
+          <col style={{ width: ROWNUM_COL_W }} />
+          {sheet.columns.map((_, ci) => (
+            <col key={ci} style={{ width: colW(ci) }} />
+          ))}
+        </colgroup>
         <thead className="sticky top-0 z-10">
           <tr>
-            <th className="sticky left-0 z-20 bg-gray-100 border border-gray-200 px-2 py-1 text-gray-400 font-normal w-20">
+            <th className="sticky left-0 z-20 bg-gray-100 border border-gray-200 px-2 py-1 text-gray-400 font-normal">
               <span className="text-red-500">A</span>/<span className="text-green-600">B</span>
             </th>
             {sheet.columns.map((c, ci) => (
               <th
                 key={ci}
-                className={`border border-gray-200 px-2 py-1 text-left font-semibold whitespace-nowrap ${
+                className={`relative border border-gray-200 px-2 py-1 text-left font-semibold overflow-hidden text-ellipsis whitespace-nowrap ${
                   c.status === 'added'
                     ? 'bg-green-100 text-green-800'
                     : c.status === 'removed'
                     ? 'bg-red-100 text-red-800 line-through'
                     : 'bg-gray-100 text-gray-700'
                 }`}
-                title={c.status !== 'equal' ? `${c.status} column` : c.name}
+                title={c.status !== 'equal' ? `${c.status} column — ${c.name}` : c.name}
               >
                 {c.status === 'added' && '+ '}
                 {c.status === 'removed' && '− '}
                 {c.name || <span className="text-gray-300">(blank)</span>}
+                {/* Drag handle on the right edge to resize this column. */}
+                <span
+                  onMouseDown={e => onDragStart(ci, e)}
+                  className="absolute top-0 right-0 h-full w-1.5 cursor-col-resize hover:bg-indigo-400/60"
+                  title="Drag to resize column"
+                />
               </th>
             ))}
           </tr>
@@ -305,7 +388,7 @@ function Row({ row, onVar }: { row: GridRow; onVar?: (varName: string) => void }
             key={ci}
             onClick={() => onVar!(varName)}
             title={`View "${varName}" history across versions`}
-            className="border border-gray-200 px-2 py-1 whitespace-nowrap min-w-[3rem] max-w-[28rem] truncate text-indigo-700 underline decoration-dotted cursor-pointer hover:bg-indigo-50"
+            className="border border-gray-200 px-2 py-1 whitespace-nowrap truncate text-indigo-700 underline decoration-dotted cursor-pointer hover:bg-indigo-50"
           >
             {c.new || c.old}
           </td>
@@ -319,17 +402,18 @@ function Row({ row, onVar }: { row: GridRow; onVar?: (varName: string) => void }
 
 function Cell({ change, header }: { change: { status: string; old?: string; new?: string }; header?: boolean }) {
   if (header && change.status === 'equal') {
+    const t = change.new || change.old || '';
     return (
-      <td className="border border-gray-300 px-2 py-1 bg-slate-100 text-slate-800 font-semibold whitespace-nowrap min-w-[3rem] max-w-[28rem] truncate">
-        {change.new || change.old || ' '}
+      <td className="border border-gray-300 px-2 py-1 bg-slate-100 text-slate-800 font-semibold whitespace-nowrap truncate" title={t}>
+        {t || ' '}
       </td>
     );
   }
   if (change.status === 'modified') {
     return (
       <td
-        className="border border-gray-200 px-2 py-1 bg-amber-100 text-amber-900 whitespace-nowrap cursor-help min-w-[3rem] max-w-[28rem] truncate"
-        title={`was: ${change.old || '(empty)'}`}
+        className="border border-gray-200 px-2 py-1 bg-amber-100 text-amber-900 whitespace-nowrap cursor-help truncate"
+        title={`was: ${change.old || '(empty)'}\nnow: ${change.new || '(empty)'}`}
       >
         {change.new || <span className="text-gray-400">(empty)</span>}
         <span className="ml-1 text-amber-400 text-[10px]">●</span>
@@ -338,20 +422,20 @@ function Cell({ change, header }: { change: { status: string; old?: string; new?
   }
   if (change.status === 'added') {
     return (
-      <td className="border border-gray-200 px-2 py-1 bg-green-50 text-green-900 whitespace-nowrap min-w-[3rem] max-w-[28rem] truncate">
+      <td className="border border-gray-200 px-2 py-1 bg-green-50 text-green-900 whitespace-nowrap truncate" title={change.new || ''}>
         {change.new || ' '}
       </td>
     );
   }
   if (change.status === 'removed') {
     return (
-      <td className="border border-gray-200 px-2 py-1 bg-red-50 text-red-900 whitespace-nowrap line-through min-w-[3rem]">
+      <td className="border border-gray-200 px-2 py-1 bg-red-50 text-red-900 line-through truncate" title={change.old || ''}>
         {change.old || ' '}
       </td>
     );
   }
   return (
-    <td className="border border-gray-200 px-2 py-1 text-gray-700 whitespace-nowrap min-w-[3rem] max-w-[28rem] truncate">
+    <td className="border border-gray-200 px-2 py-1 text-gray-700 whitespace-nowrap truncate" title={change.new || change.old || ''}>
       {change.new || change.old || ' '}
     </td>
   );

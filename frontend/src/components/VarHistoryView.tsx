@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { VarHistory } from '../types';
 import { VariableHistory } from '../../wailsjs/go/main/App';
+import { useZoom, ZoomControls, fontScale } from './Zoom';
 
 interface VarHistoryViewProps {
   root: string;
@@ -25,6 +26,7 @@ function fmtDate(epoch: number): string {
 export function VarHistoryView({ root, trackId, sheet, varName, onClose }: VarHistoryViewProps) {
   const [hist, setHist] = useState<VarHistory | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const zoom = useZoom();
 
   useEffect(() => {
     setHist(null);
@@ -48,6 +50,7 @@ export function VarHistoryView({ root, trackId, sheet, varName, onClose }: VarHi
           {sheet} · <strong>{varName}</strong>
         </span>
         <span className="text-gray-400">— evolution across versions</span>
+        <span className="ml-auto"><ZoomControls {...zoom} /></span>
       </div>
 
       {error && <div className="p-4 text-red-600 text-sm font-mono">{error}</div>}
@@ -56,8 +59,8 @@ export function VarHistoryView({ root, trackId, sheet, varName, onClose }: VarHi
       )}
 
       {hist && (
-        <div className="flex-1 overflow-auto p-3">
-          <table className="border-collapse text-xs">
+        <div className="flex-1 overflow-auto p-3" style={{ fontSize: fontScale(zoom.zoom) }}>
+          <table className="border-collapse">
             <thead>
               <tr className="bg-gray-100">
                 <th className="sticky left-0 bg-gray-100 border border-gray-200 px-2 py-1 text-left">Version</th>

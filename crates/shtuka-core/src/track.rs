@@ -23,6 +23,12 @@ use crate::{dispatch, DiffResult};
 
 const HISTORY_DIR: &str = ".shtuka-history";
 
+/// Minimum fraction of non-empty cells for a row to be treated as the table
+/// header when locating a variable in a spec (`HEADER_FILL_NUM / HEADER_FILL_DEN`
+/// = 80%). Metadata rows above the header are sparse, so this skips them.
+const HEADER_FILL_NUM: usize = 8;
+const HEADER_FILL_DEN: usize = 10;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Snapshot {
     pub seq: u32,
@@ -427,12 +433,15 @@ fn extract_var_row(path: &str, sheet: &str, var_name: &str) -> (Vec<String>, Opt
     };
     let grid: Vec<Vec<String>> = range.rows().map(|r| r.iter().map(to_s).collect()).collect();
 
-    // Header row = the first row that fills most of the width (mirrors the Excel
-    // diff's detector); SDTM specs put it after the metadata block.
+    // Header row = the first row that is at least HEADER_FILL_RATIO full. SDTM/
+    // ADaM specs put a metadata block (title, sponsor, …) above the real table
+    // header, so we can't assume row 0; the first densely-filled row is the
+    // header. (This is shtuka's own detector — the Excel grid diff aligns columns
+    // positionally and does not detect a header row.)
     let width = grid.iter().map(|r| r.len()).max().unwrap_or(0);
     let header_idx = grid.iter().position(|r| {
         let filled = r.iter().filter(|c| !c.trim().is_empty()).count();
-        width >= 2 && filled >= (width * 8).div_ceil(10)
+        width >= 2 && filled * HEADER_FILL_DEN >= width * HEADER_FILL_NUM
     });
     let headers = header_idx.map(|i| grid[i].clone()).unwrap_or_default();
     let start = header_idx.map(|i| i + 1).unwrap_or(0);

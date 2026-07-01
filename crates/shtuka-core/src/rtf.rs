@@ -9,6 +9,14 @@ use tate::lines::diff;
 
 use serde::{Deserialize, Serialize};
 
+/// Minimum cell-text similarity for a deleted row and an inserted row to be
+/// paired as a single "modified" row rather than reported as separate
+/// remove+add. Only consulted when the rows' labels don't already match (a
+/// label match pairs them regardless of similarity). Mirrors tate's
+/// [`DEFAULT_SIMILARITY`]; kept as its own named constant so the row-pairing
+/// heuristic can be tuned independently of tate's inline word threshold.
+const ROW_MATCH_SIMILARITY: f64 = 0.5;
+
 /// Visual style of one cell — semantic only, no layout. Consumers control
 /// rendering (column widths, fonts, borders) entirely.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -25,9 +33,28 @@ pub struct CellStyle {
     pub align: String,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub bold: bool,
-    /// Monospace font (\f2 Courier in SAS output).
+    /// Monospace font (fixed-pitch \fmodern font in SAS output).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub mono: bool,
+    /// Font size in half-points (RTF `\fs`), 0 = unset. The frontend renders it
+    /// as `fs/2` pt. Carried so the rendered table keeps the source's relative
+    /// text sizing (titles vs body) instead of one flat size.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub fs: u32,
+    /// This cell's width as a fraction (0.0–1.0) of the row's total width,
+    /// derived from the `\cellx` boundary coordinates. 0 = unknown. The frontend
+    /// renders it as a percentage column width so columns keep their source
+    /// proportions instead of the browser's equal split.
+    #[serde(rename = "widthPct", default, skip_serializing_if = "is_zero_f64")]
+    pub width_pct: f64,
+}
+
+fn is_zero_u32(v: &u32) -> bool {
+    *v == 0
+}
+
+fn is_zero_f64(v: &f64) -> bool {
+    *v == 0.0
 }
 
 /// One parsed cell: its text and style.
@@ -62,6 +89,12 @@ pub struct DiffCell {
 #[derive(Serialize, Deserialize)]
 pub struct DiffRow {
     pub status: String, // equal | modified | added | removed
+    /// Which part of the document this row belongs to: "header" | "body" |
+    /// "footer". The frontend uses region transitions to add spacing between the
+    /// title block (header) and the table body, which are adjacent in the source
+    /// with no blank row between them.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub region: String,
     pub cells: Vec<DiffCell>,
 }
 
@@ -144,6 +177,68 @@ pub fn rtf_diff(path_a: &str, path_b: &str) -> Result<RtfResult, String> {
     Ok(res)
 }
 
+/// Scan the RTF `\fonttbl` and return the font indices declared fixed-pitch
+/// (`\fmodern`) — these render as monospace. SAS emits Courier as `\f2\fmodern`,
+/// but we read the table instead of assuming index 2, so decks from other
+/// generators (or with a different Courier index) are handled correctly.
+fn mono_font_indices(s: &str) -> Vec<usize> {
+    let Some(pos) = s.find("\\fonttbl") else {
+        return Vec::new();
+    };
+    let chars: Vec<char> = s[pos..].chars().collect();
+    let n = chars.len();
+    let mut depth = 1i32; // already inside the fonttbl group (its opening '{')
+    let mut mono: Vec<usize> = Vec::new();
+    let mut cur_idx: Option<usize> = None;
+    let mut i = 0usize;
+    while i < n && depth > 0 {
+        match chars[i] {
+            '{' => {
+                depth += 1;
+                i += 1;
+            }
+            '}' => {
+                depth -= 1;
+                i += 1;
+            }
+            ';' => {
+                // End of one font entry.
+                cur_idx = None;
+                i += 1;
+            }
+            '\\' => {
+                let mut j = i + 1;
+                while j < n && chars[j].is_ascii_alphabetic() {
+                    j += 1;
+                }
+                let word: String = chars[i + 1..j].iter().collect();
+                let num_start = j;
+                if j < n && chars[j] == '-' {
+                    j += 1;
+                }
+                while j < n && chars[j].is_ascii_digit() {
+                    j += 1;
+                }
+                let param: Option<usize> = chars[num_start..j].iter().collect::<String>().parse().ok();
+                match word.as_str() {
+                    "f" => cur_idx = param,
+                    "fmodern" => {
+                        if let Some(idx) = cur_idx {
+                            if !mono.contains(&idx) {
+                                mono.push(idx);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                i = j;
+            }
+            _ => i += 1,
+        }
+    }
+    mono
+}
+
 fn read_rows(path: &str) -> Result<Vec<Row>, String> {
     if path.is_empty() {
         return Ok(Vec::new());
@@ -151,6 +246,18 @@ fn read_rows(path: &str) -> Result<Vec<Row>, String> {
     let bytes = std::fs::read(path).map_err(|e| format!("read {}: {}", path, e))?;
     let text = String::from_utf8_lossy(&bytes);
     Ok(parse_rtf_tables(&text))
+}
+
+/// Monospace font indices for a deck: those declared `\fmodern` in the font
+/// table, or `[2]` as a fallback (SAS's conventional Courier slot) when the
+/// table declares none.
+fn resolve_mono_fonts(s: &str) -> Vec<usize> {
+    let mono = mono_font_indices(s);
+    if mono.is_empty() {
+        vec![2]
+    } else {
+        mono
+    }
 }
 
 // --- row matching ----------------------------------------------------------
@@ -162,7 +269,8 @@ enum RowMatch {
 }
 
 /// pair_rows greedily matches deleted rows to inserted rows by cell-text
-/// similarity (>=0.5), turning close matches into modified pairs.
+/// similarity (>= [`ROW_MATCH_SIMILARITY`]), turning close matches into modified
+/// pairs.
 fn pair_rows(dels: &[usize], ins: &[usize], rows_a: &[Row], rows_b: &[Row]) -> Vec<RowMatch> {
     let mut used = vec![false; ins.len()];
     let mut out: Vec<RowMatch> = Vec::new();
@@ -192,7 +300,7 @@ fn pair_rows(dels: &[usize], ins: &[usize], rows_a: &[Row], rows_b: &[Row]) -> V
                 best_label = label;
             }
         }
-        if best_j >= 0 && (best_label || best >= 0.5) {
+        if best_j >= 0 && (best_label || best >= ROW_MATCH_SIMILARITY) {
             used[best_j as usize] = true;
             out.push(RowMatch::Modified(ai, ins[best_j as usize]));
         } else {
@@ -317,7 +425,18 @@ fn diff_row(a: Option<&Row>, b: Option<&Row>) -> DiffRow {
     }
 
     let status = if row_status == "equal" && any_mod { "modified" } else { row_status };
-    DiffRow { status: status.into(), cells }
+    // Region comes from whichever side has the row (they agree when both exist).
+    let region = a.or(b).map(|r| region_str(r.region)).unwrap_or("").to_string();
+    DiffRow { status: status.into(), region, cells }
+}
+
+/// Serialize a [`Region`] to the string the frontend consumes.
+fn region_str(r: Region) -> &'static str {
+    match r {
+        Region::Header => "header",
+        Region::Body => "body",
+        Region::Footer => "footer",
+    }
 }
 
 // --- RTF parsing -----------------------------------------------------------
@@ -340,13 +459,17 @@ struct CharState {
     color_idx: usize, // \cf
     bold: bool,
     mono: bool,
+    fs: u32, // \fs font size in half-points (0 = unset)
 }
 
-/// Per-cell-definition state from \trowd (shading, alignment).
+/// Per-cell-definition state from \trowd (shading, right boundary). Alignment is
+/// NOT stored here: it's a paragraph property set by \ql/\qc/\qr right before
+/// each \cell (which comes AFTER the \cellx defs), so it's captured at \cell time
+/// from the current paragraph alignment, not here.
 #[derive(Debug, Clone, Default)]
 struct CellDef {
     bg_idx: usize,   // \clcbpat color index
-    align: String,   // from \ql/\qc/\qr seen before \cell
+    cellx: i64,      // \cellx right-edge coordinate in twips (0 = unset)
 }
 
 fn is_ascii_letter(c: char) -> bool {
@@ -373,6 +496,7 @@ enum Region {
 
 /// parse_rtf_tables walks the RTF and emits table rows with styled cells.
 fn parse_rtf_tables(s: &str) -> Vec<Row> {
+    let mono_fonts = resolve_mono_fonts(s);
     let runes: Vec<char> = s.chars().collect();
     let n = runes.len();
 
@@ -483,7 +607,7 @@ fn parse_rtf_tables(s: &str) -> Vec<Row> {
                     }
 
                     handle_word(
-                        &word, param, neg, &param_str, depth,
+                        &word, param, neg, &param_str, depth, &mono_fonts,
                         &mut skip_depth, &mut in_colortbl, &mut cur_color, &mut colors,
                         &mut cs, &mut cur_align, &mut pending_def, &mut cell_defs,
                         &mut row_cells, &mut cur_text, &mut rows,
@@ -582,6 +706,7 @@ fn handle_word(
     _neg: bool,
     param_str: &str,
     depth: isize,
+    mono_fonts: &[usize],
     skip_depth: &mut isize,
     in_colortbl: &mut bool,
     cur_color: &mut ColorAccum,
@@ -636,8 +761,12 @@ fn handle_word(
         // --- character formatting ---
         "cf" => cs.color_idx = param as usize,
         "b" => cs.bold = param_str.is_empty() || param != 0,
-        "f" => cs.mono = param == 2, // \f2 = Courier in SAS output
+        "f" => cs.mono = mono_fonts.contains(&(param as usize)), // fixed-pitch font from \fonttbl
+        "fs" => cs.fs = param.max(0) as u32, // font size in half-points
         "plain" => *cs = CharState::default(),
+        // --- paragraph reset: \pard clears paragraph props, incl. alignment
+        // (RTF default is left). Each cell's \pard...\ql/\qc/\qr sets its own. ---
+        "pard" => *cur_align = String::new(),
         // --- alignment (applies to current paragraph/cell) ---
         "ql" => *cur_align = "left".into(),
         "qc" => *cur_align = "center".into(),
@@ -649,14 +778,15 @@ fn handle_word(
         }
         "clcbpat" => pending_def.bg_idx = param as usize,
         "cellx" => {
-            pending_def.align = cur_align.clone();
+            pending_def.cellx = param; // right-edge boundary in twips
             cell_defs.push(std::mem::take(pending_def));
         }
         // --- content breaks ---
         "cell" => {
             let idx = row_cells.len();
             let def = cell_defs.get(idx).cloned().unwrap_or_default();
-            row_cells.push(make_cell(cur_text, cs, &def, cur_align));
+            let width_pct = column_width_pct(idx, cell_defs);
+            row_cells.push(make_cell(cur_text, cs, &def, cur_align, width_pct));
             cur_text.clear();
         }
         "row" => {
@@ -686,19 +816,18 @@ fn make_cell(
     cs: &CharState,
     def: &CellDef,
     cur_align: &str,
+    width_pct: f64,
 ) -> Cell {
-    let align = if !def.align.is_empty() {
-        def.align.clone()
-    } else if !cur_align.is_empty() {
-        cur_align.to_string()
-    } else {
-        String::new()
-    };
+    // Alignment is the current paragraph alignment (\ql/\qc/\qr set right before
+    // this \cell). Empty = RTF default (left).
+    let align = cur_align.to_string();
 
     let mut style = CellStyle {
         align,
         bold: cs.bold,
         mono: cs.mono,
+        fs: cs.fs,
+        width_pct,
         ..Default::default()
     };
     if def.bg_idx > 0 {
@@ -708,6 +837,28 @@ fn make_cell(
         style.color = format!("idx:{}", cs.color_idx);
     }
     Cell { text: normalize_cell(text), style }
+}
+
+/// column_width_pct derives cell `idx`'s width as a fraction of the row's total
+/// width from the `\cellx` boundaries: a cell spans from the previous boundary
+/// (or 0 for the first) to its own, and the row's total is the last boundary.
+/// Returns 0.0 when the boundaries are missing or non-increasing (unknown), so
+/// the frontend falls back to an equal split for that row.
+fn column_width_pct(idx: usize, cell_defs: &[CellDef]) -> f64 {
+    let total = cell_defs.last().map(|d| d.cellx).unwrap_or(0);
+    if total <= 0 {
+        return 0.0;
+    }
+    let right = match cell_defs.get(idx) {
+        Some(d) if d.cellx > 0 => d.cellx,
+        _ => return 0.0,
+    };
+    let left = if idx == 0 { 0 } else { cell_defs[idx - 1].cellx };
+    let width = right - left;
+    if width <= 0 {
+        return 0.0;
+    }
+    width as f64 / total as f64
 }
 
 /// normalize_cell tidies a cell's text WITHOUT destroying structure: it keeps
@@ -796,6 +947,75 @@ mod tests {
         assert_eq!(r.added + r.modified + r.removed, 0, "self diff not clean: {:?}", (r.added, r.modified, r.removed));
         assert_eq!(r.rows.len(), 2);
         let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn alignment_is_per_cell_not_leaked() {
+        // A header-style row: left cell (\ql) then right cell (\qr). The \cellx
+        // defs come before the alignment control words, so alignment must be
+        // captured at \cell time — not leak the previous row's \qc.
+        let rtf = r"{\rtf1\trowd\cellx7000\cellx14000\pard\intbl\ql AstraZeneca\cell\pard\intbl\qr Page 1 of 2\cell\row}";
+        let rows = parse_rtf_tables(rtf);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].cells[0].style.align, "left");
+        assert_eq!(rows[0].cells[1].style.align, "right");
+    }
+
+    #[test]
+    fn pard_resets_alignment_to_default() {
+        // After a centered title row, a \pard\intbl\ql body cell must be left,
+        // not inherit the title's center.
+        let rtf = r"{\rtf1\trowd\cellx14000\pard\intbl\qc Title\cell\row\trowd\cellx14000\pard\intbl\ql Body\cell\row}";
+        let rows = parse_rtf_tables(rtf);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].cells[0].style.align, "center");
+        assert_eq!(rows[1].cells[0].style.align, "left");
+    }
+
+    #[test]
+    fn column_widths_from_cellx() {
+        // Two cells: boundaries at 2000 and 10000 twips → first column is
+        // 2000/10000 = 20%, second is 8000/10000 = 80%.
+        let rtf = r"{\rtf1\trowd\cellx2000\cellx10000\intbl A\cell B\cell\row}";
+        let rows = parse_rtf_tables(rtf);
+        assert_eq!(rows.len(), 1);
+        let w0 = rows[0].cells[0].style.width_pct;
+        let w1 = rows[0].cells[1].style.width_pct;
+        assert!((w0 - 0.2).abs() < 1e-9, "col0 width = {w0}");
+        assert!((w1 - 0.8).abs() < 1e-9, "col1 width = {w1}");
+    }
+
+    #[test]
+    fn font_size_captured() {
+        let rtf = r"{\rtf1\trowd\cellx5000\intbl\fs18 hello\cell\row}";
+        let rows = parse_rtf_tables(rtf);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].cells[0].style.fs, 18);
+    }
+
+    #[test]
+    fn mono_font_from_fonttbl() {
+        // Courier declared at a non-2 index via \fmodern must be picked up.
+        let rtf = r"{\rtf1{\fonttbl{\f0\froman Times;}{\f5\fmodern Courier New;}}}";
+        assert_eq!(mono_font_indices(rtf), vec![5]);
+        assert_eq!(resolve_mono_fonts(rtf), vec![5]);
+    }
+
+    #[test]
+    fn mono_font_fallback_when_no_fonttbl() {
+        // No font table → fall back to SAS's conventional Courier slot (index 2).
+        assert!(mono_font_indices(r"{\rtf1 no table}").is_empty());
+        assert_eq!(resolve_mono_fonts(r"{\rtf1 no table}"), vec![2]);
+    }
+
+    #[test]
+    fn mono_style_applied_from_fonttbl() {
+        // A cell in \f5 (declared \fmodern) is mono; a \f0 cell is not.
+        let rtf = r"{\rtf1{\fonttbl{\f0\froman Times;}{\f5\fmodern Courier;}}\trowd\cellx3\cellx6\intbl\f5 code\cell\f0 prose\cell\row}";
+        let rows = parse_rtf_tables(rtf);
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].cells[0].style.mono, "\\f5 cell should be mono");
+        assert!(!rows[0].cells[1].style.mono, "\\f0 cell should not be mono");
     }
 
     #[test]

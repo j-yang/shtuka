@@ -75,7 +75,18 @@ pub fn dispatch(path_a: &str, path_b: &str) -> Result<DiffResult, String> {
 
     match ext.as_str() {
         "xlsx" | "xls" | "xlsm" => {
-            let r = mumford::excel::excel_diff(path_a, path_b)?;
+            // Clinical workbooks (validation logs, SDTM/ADaM specs) are tabular:
+            // a header row (often below a title/metadata block) followed by data
+            // rows, with a fixed set of columns. Detect that header and lock the
+            // columns so a column whose every value changed (e.g. a timestamp
+            // column) stays one modified column instead of being mis-read as a
+            // delete+insert of whole columns. This domain assumption lives here,
+            // not in mumford, which stays format-general.
+            let opts = mumford::excel::ExcelOptions {
+                detect_header: true,
+                lock_columns: true,
+            };
+            let r = mumford::excel::excel_diff_with(path_a, path_b, &opts)?;
             res.file_type = "excel".into();
             res.excel = Some(r);
         }

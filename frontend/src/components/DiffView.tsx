@@ -6,6 +6,7 @@ import { ExcelDiffPane } from './ExcelDiffPane';
 import { PdfPagesView } from './PdfPagesView';
 import { RtfDiffView } from './RtfDiffView';
 import { XmlDiffView } from './XmlDiffView';
+import { useZoom, ZoomControls, fontScale } from './Zoom';
 
 const isPdf = (p?: string) => !!p && /\.pdf$/i.test(p);
 
@@ -142,7 +143,7 @@ export function DiffView({ pathA, pathB, label, onClose, fetcher, fetchKey, trac
             {!loading && error && (
               <div className="flex-1 p-4 text-red-600 text-sm">
                 <div className="font-semibold mb-1">Error</div>
-                <div className="font-mono text-xs">{error}</div>
+                <div className="font-mono text-[0.92em]">{error}</div>
               </div>
             )}
             {!loading && !error && result && (
@@ -215,6 +216,7 @@ function TextDiffPane({
     return { leftLines: left, rightLines: right };
   }, [result]);
 
+  const zoom = useZoom();
   const total = leftLines.length;
 
   // Decide which rows to keep: any changed row plus TEXT_CONTEXT around it.
@@ -331,24 +333,27 @@ function TextDiffPane({
 
   return (
     <div className="flex-1 flex flex-col min-w-0">
+      <div className="px-3 py-1 border-b border-gray-100 bg-gray-50 flex items-center flex-shrink-0">
+        <span className="ml-auto"><ZoomControls {...zoom} /></span>
+      </div>
       {truncatedAt >= 0 && (
         <div className="px-3 py-1.5 bg-amber-50 border-b border-amber-200 text-[11px] text-amber-800 flex-shrink-0">
           ⚠ Showing the first {MAX_RENDER_ROWS.toLocaleString()} changed lines of {total.toLocaleString()}.
           The files differ too extensively to render in full.
         </div>
       )}
-      <div className="flex-1 flex overflow-hidden">
+      <div className="flex-1 flex overflow-hidden" style={{ fontSize: fontScale(zoom.zoom) }}>
         <div
           ref={leftRef}
           onScroll={onScroll('left')}
-          className="flex-1 overflow-auto border-r border-gray-200 font-mono text-xs"
+          className="flex-1 overflow-auto border-r border-gray-200 font-mono"
         >
           {renderPane(leftLines, 'l')}
         </div>
         <div
           ref={rightRef}
           onScroll={onScroll('right')}
-          className="flex-1 overflow-auto font-mono text-xs"
+          className="flex-1 overflow-auto font-mono"
         >
           {renderPane(rightLines, 'r')}
         </div>
@@ -358,8 +363,13 @@ function TextDiffPane({
 }
 
 function DocxDiffPane({ result }: { result: DocxResult }) {
+  const zoom = useZoom();
   return (
-    <div className="flex-1 overflow-auto p-4">
+    <div className="flex-1 flex flex-col min-w-0">
+      <div className="px-3 py-1 border-b border-gray-100 bg-gray-50 flex items-center flex-shrink-0">
+        <span className="ml-auto"><ZoomControls {...zoom} /></span>
+      </div>
+      <div className="flex-1 overflow-auto p-4" style={{ fontSize: fontScale(zoom.zoom) }}>
       <div className="mb-4 text-xs text-gray-500 flex gap-4">
         <span>{result.addedParagraphs.length} added</span>
         <span className="text-amber-700">{result.modifiedParagraphs.length} modified</span>
@@ -370,10 +380,10 @@ function DocxDiffPane({ result }: { result: DocxResult }) {
       {result.modifiedParagraphs.slice(0, 50).map(p => (
         <div key={`m-${p.index}`} className="mb-3 border-l-2 border-amber-400 pl-3">
           <div className="text-[10px] text-gray-400 mb-1">¶ {p.index + 1}</div>
-          <div className="font-mono text-xs bg-red-50 px-2 py-1 line-through text-red-900">
+          <div className="font-mono text-[0.92em] bg-red-50 px-2 py-1 line-through text-red-900">
             {p.old}
           </div>
-          <div className="font-mono text-xs bg-green-50 px-2 py-1 text-green-900 mt-0.5">
+          <div className="font-mono text-[0.92em] bg-green-50 px-2 py-1 text-green-900 mt-0.5">
             {p.new}
           </div>
         </div>
@@ -382,7 +392,7 @@ function DocxDiffPane({ result }: { result: DocxResult }) {
       {result.addedParagraphs.slice(0, 30).map(p => (
         <div key={`a-${p.index}`} className="mb-2 border-l-2 border-green-400 pl-3">
           <div className="text-[10px] text-gray-400 mb-1">¶ {p.index + 1} (new)</div>
-          <div className="font-mono text-xs bg-green-50 px-2 py-1 text-green-900">
+          <div className="font-mono text-[0.92em] bg-green-50 px-2 py-1 text-green-900">
             {p.text}
           </div>
         </div>
@@ -391,7 +401,7 @@ function DocxDiffPane({ result }: { result: DocxResult }) {
       {result.deletedParagraphs.slice(0, 30).map(p => (
         <div key={`d-${p.index}`} className="mb-2 border-l-2 border-red-400 pl-3">
           <div className="text-[10px] text-gray-400 mb-1">¶ {p.index + 1} (removed)</div>
-          <div className="font-mono text-xs bg-red-50 px-2 py-1 line-through text-red-900">
+          <div className="font-mono text-[0.92em] bg-red-50 px-2 py-1 line-through text-red-900">
             {p.text}
           </div>
         </div>
@@ -402,14 +412,20 @@ function DocxDiffPane({ result }: { result: DocxResult }) {
         result.deletedParagraphs.length === 0 && (
           <div className="text-gray-400 italic text-sm">No paragraph changes detected</div>
         )}
+      </div>
     </div>
   );
 }
 
 function PptxDiffPane({ result }: { result: PptxResult }) {
   const changed = result.added + result.modified + result.removed;
+  const zoom = useZoom();
   return (
-    <div className="flex-1 overflow-auto p-4">
+    <div className="flex-1 flex flex-col min-w-0">
+      <div className="px-3 py-1 border-b border-gray-100 bg-gray-50 flex items-center flex-shrink-0">
+        <span className="ml-auto"><ZoomControls {...zoom} /></span>
+      </div>
+      <div className="flex-1 overflow-auto p-4" style={{ fontSize: fontScale(zoom.zoom) }}>
       <div className="mb-4 text-xs text-gray-500 flex gap-4">
         <span>{result.added} slide(s) added</span>
         <span className="text-amber-700">{result.modified} modified</span>
@@ -428,21 +444,21 @@ function PptxDiffPane({ result }: { result: PptxResult }) {
           {s.ops?.filter(op => op.type !== 'equal').slice(0, 20).map((op, j) => (
             <div key={j} className="mb-1">
               {op.type === 'delete' && (
-                <div className="font-mono text-xs bg-red-50 px-2 py-0.5 line-through text-red-900">
+                <div className="font-mono text-[0.92em] bg-red-50 px-2 py-0.5 line-through text-red-900">
                   {op.old}
                 </div>
               )}
               {op.type === 'insert' && (
-                <div className="font-mono text-xs bg-green-50 px-2 py-0.5 text-green-900">
+                <div className="font-mono text-[0.92em] bg-green-50 px-2 py-0.5 text-green-900">
                   {op.new}
                 </div>
               )}
               {op.type === 'replace' && (
                 <>
-                  <div className="font-mono text-xs bg-red-50 px-2 py-0.5 line-through text-red-900">
+                  <div className="font-mono text-[0.92em] bg-red-50 px-2 py-0.5 line-through text-red-900">
                     {op.old}
                   </div>
-                  <div className="font-mono text-xs bg-green-50 px-2 py-0.5 text-green-900">
+                  <div className="font-mono text-[0.92em] bg-green-50 px-2 py-0.5 text-green-900">
                     {op.new}
                   </div>
                 </>
@@ -463,6 +479,7 @@ function PptxDiffPane({ result }: { result: PptxResult }) {
           <div className="text-[10px] text-gray-400 mb-1">Slide {s.slideA} (removed)</div>
         </div>
       ))}
+      </div>
     </div>
   );
 }

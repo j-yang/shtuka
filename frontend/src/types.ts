@@ -227,6 +227,7 @@ export interface RtfDiffCell {
 
 export interface RtfDiffRow {
   status: 'equal' | 'modified' | 'added' | 'removed';
+  region?: 'header' | 'body' | 'footer';
   cells: RtfDiffCell[];
 }
 

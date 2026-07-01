@@ -43,6 +43,7 @@ Thumbs.db
 *.xls
 *.xlsm
 *.pdf
+*.rtf
 
 # Exported diff reports (may contain real data)
 /*.html
