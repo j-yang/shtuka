@@ -3965,9 +3965,9 @@ checksum = "61c41af27dd6d1e27b1b16b489db798443478cef1f06a660c96db617ba5de3b1"
 
 [[package]]
 name = "tate"
-version = "0.3.0"
+version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "38f047f4938b1d26cbafdfd79a485e9d2cf4985ed8339c28bf3a0a4bbb0efdd3"
+checksum = "fb84958afc9558a2249d83042145d286eb6105a018180609697334c5870d57bf"
 dependencies = [
  "serde",
 ]

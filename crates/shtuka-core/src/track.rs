@@ -44,6 +44,10 @@ pub struct Snapshot {
     /// Auto-generated one-line diff summary vs the previous snapshot.
     #[serde(default)]
     pub summary: String,
+    /// Structured change set vs the previous snapshot (diff result + metadata).
+    /// `None` for the first snapshot or when the diff failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub changeset: Option<tate::change::ChangeSet>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -210,7 +214,7 @@ pub fn create_track(root: &str, name: &str, source_path: &str, note: &str) -> io
         snapshots: Vec::new(),
     };
 
-    let snap = ingest(root, &mut track, src, note, "initial version")?;
+    let snap = ingest(root, &mut track, src, note, "initial version", None)?;
     track.snapshots.push(snap);
     write_manifest(root, &track)?;
     Ok(track)
@@ -257,17 +261,22 @@ pub fn take_snapshot(
         }
     }
 
-    // Compute the auto summary by diffing the previous stored snapshot against
-    // the incoming file before we store it.
-    let summary = match track.snapshots.last() {
+    // Compute the auto summary and structured changeset by diffing the previous
+    // stored snapshot against the incoming file before we store it.
+    let (summary, changeset) = match track.snapshots.last() {
         Some(prev) => {
             let prev_path = track_dir(root, id).join(&prev.file);
-            summarize_pair(prev_path.to_string_lossy().as_ref(), &src_str)
+            summarize_and_changeset(
+                prev_path.to_string_lossy().as_ref(),
+                &src_str,
+                &prev.sha256,
+                &new_hash,
+            )
         }
-        None => "initial version".to_string(),
+        None => ("initial version".to_string(), None),
     };
 
-    let snap = ingest(root, &mut track, &src, note, &summary)?;
+    let snap = ingest(root, &mut track, &src, note, &summary, changeset)?;
     track.snapshots.push(snap);
     track.last_source_path = src_str;
     write_manifest(root, &track)?;
@@ -446,6 +455,7 @@ fn ingest(
     src: &Path,
     note: &str,
     summary: &str,
+    changeset: Option<tate::change::ChangeSet>,
 ) -> io::Result<Snapshot> {
     let seq = track.snapshots.len() as u32 + 1;
     let now = now_secs();
@@ -478,15 +488,39 @@ fn ingest(
         file: rel,
         note: note.trim().to_string(),
         summary: summary.to_string(),
+        changeset,
     })
 }
 
-/// Diff two files and reduce the result to a short one-line changelog summary.
-fn summarize_pair(path_a: &str, path_b: &str) -> String {
+/// Diff two files and produce both a one-line summary and a structured ChangeSet.
+fn summarize_and_changeset(path_a: &str, path_b: &str, from_hash: &str, to_hash: &str) -> (String, Option<tate::change::ChangeSet>) {
     match dispatch(path_a, path_b) {
-        Ok(res) => summarize(&res),
-        Err(e) => format!("changed (diff failed: {e})"),
+        Ok(res) => {
+            let cs = diff_result_to_changeset(&res, from_hash, to_hash);
+            let summary = summarize(&res);
+            (summary, cs)
+        }
+        Err(e) => (format!("changed (diff failed: {e})"), None),
     }
+}
+
+/// Convert a dispatch DiffResult into a tate ChangeSet, extracting the primary
+/// diff payload (grid or lines) depending on the file format.  Formats without a
+/// direct tate payload mapping (DOCX, PPTX, XML, RTF) return `None`.
+fn diff_result_to_changeset(res: &DiffResult, from_hash: &str, to_hash: &str) -> Option<tate::change::ChangeSet> {
+    if let Some(excel) = &res.excel {
+        // First changed sheet, falling back to the first sheet overall.
+        let sheet = excel
+            .sheets
+            .iter()
+            .find(|s| s.status != "equal")
+            .or_else(|| excel.sheets.first())?;
+        return Some(tate::change::ChangeSet::new_grid(sheet.grid.clone(), from_hash, to_hash));
+    }
+    if let Some(text) = &res.text {
+        return Some(tate::change::ChangeSet::new_lines(text.ops.clone(), from_hash, to_hash));
+    }
+    None
 }
 
 fn summarize(res: &DiffResult) -> String {
@@ -546,6 +580,7 @@ mod tests {
         assert_eq!(t.snapshots.len(), 1);
         assert_eq!(t.snapshots[0].seq, 1);
         assert_eq!(t.snapshots[0].summary, "initial version");
+        assert!(t.snapshots[0].changeset.is_none());
 
         // Identical file -> no new snapshot.
         let r = take_snapshot(&root, &t.id, src.to_string_lossy().as_ref(), "").unwrap();
@@ -559,6 +594,11 @@ mod tests {
         assert_eq!(r.track.snapshots.len(), 2);
         assert_eq!(r.track.snapshots[1].note, "added a row");
         assert!(r.track.snapshots[1].summary.contains('+'));
+        assert!(r.track.snapshots[1].changeset.is_some());
+        assert_eq!(
+            r.track.snapshots[1].changeset.as_ref().unwrap().kind,
+            tate::change::ChangeKind::Line
+        );
 
         // Listing + reload.
         let list = list_tracks(&root).unwrap();
